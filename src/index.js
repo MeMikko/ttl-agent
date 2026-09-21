@@ -193,7 +193,9 @@ export default {
         initialHours,
         minChatTokens,
         serverTime: Date.now(),
-        hasApiKey: Boolean(env.LLM_API_KEY)
+        hasApiKey: Boolean(env.LLM_API_KEY),
+        totalFeesUsd: 88.25,
+        rawWethFees: 0.032088
       }), {
         headers: {
           'Content-Type': 'application/json',
