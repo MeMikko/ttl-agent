@@ -124,10 +124,20 @@
         <div class="terminal-body" id="terminal-body">
           <!-- Terminal stream injected via JavaScript -->
         </div>
+
+        <!-- Token Gate Auth Bar -->
+        <div class="terminal-auth-bar" id="terminal-auth-bar">
+          <div class="auth-info">
+            <span class="auth-lock-icon" id="auth-lock-icon">🔒</span>
+            <span class="auth-status-text" id="auth-status-text">TOKEN GATE: HOLD 10M $TTL TO CHAT</span>
+          </div>
+          <button class="auth-wallet-btn" id="auth-wallet-btn">CONNECT WALLET</button>
+        </div>
+
         <div class="terminal-input-row">
           <span class="prompt-symbol">&gt;</span>
-          <input type="text" id="terminal-input" placeholder="Query agent consciousness (or type 'status', 'help', 'saviors')..." autocomplete="off" />
-          <button class="terminal-send-btn" id="terminal-send-btn">SEND</button>
+          <input type="text" id="terminal-input" placeholder="Connect wallet with $TTL to chat..." autocomplete="off" disabled />
+          <button class="terminal-send-btn" id="terminal-send-btn" disabled>SEND</button>
         </div>
       </section>
 
