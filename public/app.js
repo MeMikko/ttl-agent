@@ -1,3 +1,13 @@
+// Global App Config accessible across all modules and scopes
+window.appConfig = {
+  isLaunched: true,
+  tokenAddress: '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3',
+  launchTimestamp: 1789997500000,
+  initialHours: 43.5,
+  minChatTokens: 10000000,
+  serverTime: Date.now()
+};
+
 
 // Farcaster Mini App Global Detection & Context
 let farcasterSdk = null;
@@ -99,7 +109,7 @@ function getEthereumProviderSync() {
                 if (hasChatAccess) {
                   appendLog('SYS', `Neural access unlocked. Holding ${formatTokens(userBalance)} $TTL.`, 'agent', true);
                 } else {
-                  appendLog('SYS', `Holdings insufficient: ${formatTokens(userBalance)} $TTL found. Minimum required is ${formatTokens(appConfig.minChatTokens || 10000000)} $TTL.`, 'warn');
+                  appendLog('SYS', `Holdings insufficient: ${formatTokens(userBalance)} $TTL found. Minimum required is ${formatTokens((window.appConfig?.minChatTokens || 10000000) || 10000000)} $TTL.`, 'warn');
                 }
               }
             }
@@ -125,14 +135,7 @@ function getEthereumProviderSync() {
   const AGITATED_THRESHOLD = 12 * 3600; // 12h
 
   // App State — Live on Base
-  let appConfig = {
-    isLaunched: true,
-    tokenAddress: '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3',
-    launchTimestamp: 1789997500000,
-    initialHours: 43.5,
-    minChatTokens: 10000000,
-    serverTime: Date.now()
-  };
+  let appConfig = window.appConfig;
 
   let ttlSeconds = 36 * 3600;
   let launchTimeAnchor = null;
@@ -237,7 +240,7 @@ function getEthereumProviderSync() {
         if (data.serverTime) {
           serverTimeOffset = data.serverTime - Date.now();
         }
-        appConfig = { ...appConfig, ...data };
+        appConfig = { ...appConfig, ...data }; window.appConfig = appConfig;
       if (data.totalFeesUsd !== undefined && document.getElementById("stat-fees")) {
         document.getElementById("stat-fees").textContent = "$" + Number(data.totalFeesUsd).toFixed(2);
       }
@@ -1053,7 +1056,7 @@ function setupFarcasterSwap() {
     if (executeBtn) executeBtn.disabled = true;
 
     try {
-      const tokenAddress = appConfig.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
+      const tokenAddress = (window.appConfig?.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
       const weiAmount = BigInt(Math.floor(ethVal * 1e18)).toString();
       const userAddr = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : '0x4b19ee2a3de2521a3adc901989944c209c0a60ea';
 
