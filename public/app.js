@@ -1099,6 +1099,14 @@ function setupFarcasterSwap() {
 
   // Execute Swap via Farcaster EIP-1193 provider
   if (executeBtn) {
+    // Wraps provider.request so a silent, never-resolving RPC can't freeze the UI forever
+    function reqWithTimeout(provider, payload, ms, label) {
+      return Promise.race([
+        provider.request(payload),
+        new Promise((_, rej) => setTimeout(() => rej(new Error((label || payload.method) + ' timed out after ' + ms + 'ms')), ms))
+      ]);
+    }
+
     executeBtn.addEventListener('click', async () => {
       if (!cachedSwapQuote || !cachedSwapQuote.transactionRequest) {
         alert('Please wait for quote to load.');
@@ -1124,81 +1132,47 @@ function setupFarcasterSwap() {
 
         const txReq = cachedSwapQuote.transactionRequest;
 
-        // Resolve active account straight from the wallet (never trust a quote-baked 'from')
-        let fromAddress = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : null;
-        try {
-          const accts = await provider.request({ method: 'eth_requestAccounts' });
-          if (accts && accts.length > 0) fromAddress = accts[0];
-        } catch (acctErr) {
-          console.warn('eth_requestAccounts failed, using cached wallet:', acctErr);
-        }
-
-        // Ensure the wallet is on Base before signing (ignored if already there)
-        try {
-          await provider.request({
-            method: 'wallet_switchEthereumChain',
-            params: [{ chainId: '0x2105' }]
-          });
-        } catch (switchErr) {
-          console.warn('wallet_switchEthereumChain skipped:', switchErr && switchErr.message);
-        }
+        // Inside a Farcaster miniapp the wallet is ALREADY connected and Base-only.
+        // Do NOT gate the send behind eth_requestAccounts / wallet_switchEthereumChain —
+        // on some Warpcast builds those sit unresolved and freeze the UI before signing.
+        let fromAddress = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : (txReq.from || null);
 
         let txHash = null;
 
-        // Farcaster/Warpcast prefer EIP-5792 wallet_sendCalls; it opens the native confirm sheet reliably.
+        // Primary: EIP-5792 wallet_sendCalls (the method Warpcast natively pops a confirm sheet for)
         try {
-          const callResult = await provider.request({
+          const callResult = await reqWithTimeout(provider, {
             method: 'wallet_sendCalls',
             params: [{
               version: '1.0',
               chainId: '0x2105',
               from: fromAddress,
-              calls: [{
-                to: txReq.to,
-                value: txReq.value,
-                data: txReq.data
-              }]
+              calls: [{ to: txReq.to, value: txReq.value, data: txReq.data }]
             }]
-          });
-          // wallet_sendCalls returns a bundle id (string or { id }) rather than a tx hash
+          }, 90000, 'wallet_sendCalls');
+
           const bundleId = (callResult && typeof callResult === 'object') ? (callResult.id || callResult.bundleId) : callResult;
           console.log('wallet_sendCalls bundle:', bundleId);
 
-          // Poll bundle status a few times; user has already confirmed by now
           for (let i = 0; i < 8 && !txHash; i++) {
             try {
-              const status = await provider.request({
-                method: 'wallet_getCallsStatus',
-                params: [bundleId]
-              });
+              const status = await reqWithTimeout(provider, { method: 'wallet_getCallsStatus', params: [bundleId] }, 8000, 'wallet_getCallsStatus');
               const receipts = status && (status.receipts || (status.calls && status.calls));
-              if (receipts && receipts[0] && receipts[0].transactionHash) {
-                txHash = receipts[0].transactionHash;
-                break;
-              }
+              if (receipts && receipts[0] && receipts[0].transactionHash) { txHash = receipts[0].transactionHash; break; }
             } catch (statusErr) {
-              console.warn('wallet_getCallsStatus not available:', statusErr && statusErr.message);
-              break; // method unsupported — stop polling
+              console.warn('wallet_getCallsStatus unavailable:', statusErr && statusErr.message);
+              break;
             }
             await new Promise(r => setTimeout(r, 1500));
           }
-          if (!txHash) txHash = bundleId; // fall back to showing the bundle id
+          if (!txHash) txHash = bundleId;
         } catch (sendCallsErr) {
-          console.warn('wallet_sendCalls unavailable, falling back to eth_sendTransaction:', sendCallsErr && sendCallsErr.message);
+          console.warn('wallet_sendCalls failed/timeout, falling back to eth_sendTransaction:', sendCallsErr && sendCallsErr.message);
 
-          // Fallback: legacy eth_sendTransaction WITHOUT the illegal chainId field
-          const txParams = {
-            from: fromAddress,
-            to: txReq.to,
-            value: txReq.value,
-            data: txReq.data
-          };
+          // Fallback: legacy eth_sendTransaction WITHOUT the illegal chainId field, also timeout-guarded
+          const txParams = { from: fromAddress, to: txReq.to, value: txReq.value, data: txReq.data };
           if (txReq.gasLimit) txParams.gas = txReq.gasLimit;
-
-          txHash = await provider.request({
-            method: 'eth_sendTransaction',
-            params: [txParams]
-          });
+          txHash = await reqWithTimeout(provider, { method: 'eth_sendTransaction', params: [txParams] }, 90000, 'eth_sendTransaction');
         }
 
         console.log('Swap tx broadcast:', txHash);
