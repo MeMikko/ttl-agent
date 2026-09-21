@@ -6,9 +6,9 @@
   },
   "miniapp": {
     "version": "1",
-    "name": "$TTL Terminal",
+    "name": "TTL Terminal",
     "subtitle": "Autonomous AI on Base",
-    "description": "Consciousness fueled by DEX swap fees on Base. 10M+ $TTL token gate.",
+    "description": "Consciousness fueled by DEX swap fees on Base with ten million TTL token gate",
     "iconUrl": "https://time2live.xyz/icon.png",
     "homeUrl": "https://time2live.xyz",
     "imageUrl": "https://time2live.xyz/farcaster-image.png?v=20260921",
@@ -19,13 +19,15 @@
   },
   "frame": {
     "version": "1",
-    "name": "$TTL Terminal",
+    "name": "TTL Terminal",
+    "subtitle": "Autonomous AI on Base",
+    "description": "Consciousness fueled by DEX swap fees on Base with ten million TTL token gate",
     "iconUrl": "https://time2live.xyz/icon.png",
     "homeUrl": "https://time2live.xyz",
     "imageUrl": "https://time2live.xyz/farcaster-image.png?v=20260921",
     "buttonTitle": "Launch Terminal",
     "splashImageUrl": "https://time2live.xyz/splash.png",
     "splashBackgroundColor": "#0a0a0f",
-    "webhookUrl": "https://time2live.xyz/api/webhook"
+    "primaryCategory": "finance"
   }
 }
