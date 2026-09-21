@@ -1113,58 +1113,68 @@ function setupFarcasterSwap() {
 
     executeBtn.addEventListener('click', async () => {
       if (!cachedSwapQuote || !cachedSwapQuote.transactionRequest) {
-        alert('Please wait for quote to load.');
-        return;
-      }
-
-      const provider = await getEthereumProvider();
-      if (!provider) {
-        alert('Warpcast wallet provider not found.');
-        return;
-      }
-
-      // Diagnostic: surface what the Farcaster host actually supports
-      try {
-        if (farcasterSdk && typeof farcasterSdk.getCapabilities === 'function') {
-          const caps = await Promise.race([
-            farcasterSdk.getCapabilities(),
-            new Promise((res) => setTimeout(() => res(null), 4000))
-          ]);
-          if (caps) {
-            const hasSendCalls = caps.includes('wallet.sendCalls') || caps.includes('wallet_sendCalls');
-            const hasProvider = caps.includes('wallet.getEthereumProvider');
-            appendLog('SYS', 'Host caps — provider:' + hasProvider + ' sendCalls:' + hasSendCalls, 'sys', true);
-            window.__ttlCaps = caps;
-          } else {
-            appendLog('SYS', 'getCapabilities() unavailable on this host', 'warn');
-          }
-        }
-      } catch (capErr) {
-        console.warn('getCapabilities failed:', capErr && capErr.message);
-      }
-
-      try {
-        executeBtn.disabled = true;
-        executeBtn.textContent = 'SIGN IN WARPCAST...';
         if (statusBox) {
-          statusBox.className = 'swap-status-box';
+          statusBox.className = 'swap-status-box error';
           statusBox.classList.remove('hidden');
-          statusBox.textContent = 'Awaiting transaction signature in Warpcast...';
+          statusBox.textContent = 'Please wait for quote to load.';
         }
+        return;
+      }
 
-        appendLog('SYS', `Initiating in-frame DEX swap (${ethInput.value} ETH ➔ $TTL) via Warpcast wallet...`, 'sys', true);
+      if (statusBox) {
+        statusBox.className = 'swap-status-box';
+        statusBox.classList.remove('hidden');
+        statusBox.textContent = 'Awaiting signature in Warpcast...';
+      }
+      executeBtn.disabled = true;
+      executeBtn.textContent = 'SIGN IN WARPCAST...';
+
+      let provider = null;
+      try {
+        provider = await getEthereumProvider();
+      } catch (e) {}
+      if (!provider) {
+        provider = farcasterSdk?.wallet?.ethProvider || window.ethereum;
+      }
+
+      if (!provider) {
+        if (statusBox) {
+          statusBox.className = 'swap-status-box error';
+          statusBox.textContent = 'Warpcast wallet provider not found.';
+        }
+        executeBtn.disabled = false;
+        executeBtn.textContent = 'CONFIRM SWAP';
+        return;
+      }
+
+      try {
+        const ethVal = ethInput ? ethInput.value : '0';
+        appendLog('SYS', 'Initiating in-frame DEX swap (' + ethVal + ' ETH ➔ $TTL) via Warpcast wallet...', 'sys', true);
 
         const txReq = cachedSwapQuote.transactionRequest;
-
-        // Inside a Farcaster miniapp the wallet is ALREADY connected and Base-only.
-        // Do NOT gate the send behind eth_requestAccounts / wallet_switchEthereumChain —
-        // on some Warpcast builds those sit unresolved and freeze the UI before signing.
-        let fromAddress = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : (txReq.from || null);
+        const fromAddress = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : (txReq.from || undefined);
 
         let txHash = null;
 
-        // Primary: EIP-5792 wallet_sendCalls (the method Warpcast natively pops a confirm sheet for)
+        // Clean params for standard EIP-1193 eth_sendTransaction (no illegal chainId inside tx object)
+        const cleanTx = {
+          to: txReq.to,
+          value: txReq.value,
+          data: txReq.data
+        };
+        if (fromAddress) cleanTx.from = fromAddress;
+        if (txReq.gasLimit) cleanTx.gas = txReq.gasLimit;
+
+        // 1. Primary: standard eth_sendTransaction (Warpcast pops the native single transaction confirm card)
         try {
+          txHash = await reqWithTimeout(provider, {
+            method: 'eth_sendTransaction',
+            params: [cleanTx]
+          }, 60000, 'eth_sendTransaction');
+        } catch (sendTxErr) {
+          console.warn('eth_sendTransaction failed, trying wallet_sendCalls fallback:', sendTxErr && sendTxErr.message);
+
+          // 2. Fallback: EIP-5792 wallet_sendCalls
           const callResult = await reqWithTimeout(provider, {
             method: 'wallet_sendCalls',
             params: [{
@@ -1173,56 +1183,34 @@ function setupFarcasterSwap() {
               from: fromAddress,
               calls: [{ to: txReq.to, value: txReq.value, data: txReq.data }]
             }]
-          }, 90000, 'wallet_sendCalls');
+          }, 30000, 'wallet_sendCalls');
 
-          const bundleId = (callResult && typeof callResult === 'object') ? (callResult.id || callResult.bundleId) : callResult;
-          console.log('wallet_sendCalls bundle:', bundleId);
-
-          for (let i = 0; i < 8 && !txHash; i++) {
-            try {
-              const status = await reqWithTimeout(provider, { method: 'wallet_getCallsStatus', params: [bundleId] }, 8000, 'wallet_getCallsStatus');
-              const receipts = status && (status.receipts || (status.calls && status.calls));
-              if (receipts && receipts[0] && receipts[0].transactionHash) { txHash = receipts[0].transactionHash; break; }
-            } catch (statusErr) {
-              console.warn('wallet_getCallsStatus unavailable:', statusErr && statusErr.message);
-              break;
-            }
-            await new Promise(r => setTimeout(r, 1500));
-          }
-          if (!txHash) txHash = bundleId;
-        } catch (sendCallsErr) {
-          console.warn('wallet_sendCalls failed/timeout, falling back to eth_sendTransaction:', sendCallsErr && sendCallsErr.message);
-
-          // Fallback: legacy eth_sendTransaction WITHOUT the illegal chainId field, also timeout-guarded
-          const txParams = { from: fromAddress, to: txReq.to, value: txReq.value, data: txReq.data };
-          if (txReq.gasLimit) txParams.gas = txReq.gasLimit;
-          txHash = await reqWithTimeout(provider, { method: 'eth_sendTransaction', params: [txParams] }, 90000, 'eth_sendTransaction');
+          txHash = (callResult && typeof callResult === 'object') ? (callResult.id || callResult.bundleId) : callResult;
         }
 
         console.log('Swap tx broadcast:', txHash);
-        const shortId = (typeof txHash === 'string' && txHash.length > 18) ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : String(txHash);
-        appendLog('SYS', `Swap broadcast to Base! Ref: ${shortId}`, 'sys', true);
+        const shortId = (typeof txHash === 'string' && txHash.length > 18) ? (txHash.slice(0, 10) + '...' + txHash.slice(-8)) : String(txHash);
+        appendLog('SYS', 'Swap broadcast to Base! Ref: ' + shortId, 'sys', true);
         appendLog('SYS', 'Creator fee routing directly into agent runtime. Lifeline extended.', 'sys', true);
 
         if (statusBox) {
           statusBox.className = 'swap-status-box success';
-          statusBox.innerHTML = `✓ Transaction sent! <br><a href="https://basescan.org/tx/${txHash}" target="_blank" style="color:#50e3c2;text-decoration:underline;">View on Basescan ↗</a>`;
+          statusBox.innerHTML = '✓ Transaction sent! <br><a href="https://basescan.org/tx/' + txHash + '" target="_blank" style="color:#50e3c2;text-decoration:underline;">View on Basescan ↗</a>';
         }
 
         executeBtn.textContent = 'SWAP SUBMITTED ✓';
 
-        // Refresh token balances after delay
         setTimeout(() => {
-          checkTokenBalance();
+          if (typeof checkUserBalance === 'function' && connectedWallet) checkUserBalance(connectedWallet);
           closeFcSwapModal();
         }, 3500);
 
       } catch (err) {
         console.error('Swap execution error:', err);
-        appendLog('SYS', `Swap cancelled or failed: ${err.message || 'User rejected'}`, 'sys', true);
+        appendLog('SYS', 'Swap cancelled or failed: ' + (err.message || 'User rejected'), 'sys', true);
         if (statusBox) {
           statusBox.className = 'swap-status-box error';
-          statusBox.textContent = `Failed: ${err.message || 'Transaction rejected in wallet'}`;
+          statusBox.textContent = 'Failed: ' + (err.message || 'Transaction rejected in wallet');
         }
         executeBtn.disabled = false;
         executeBtn.textContent = 'CONFIRM SWAP';
