@@ -16,8 +16,36 @@ function isFarcasterEnv() {
   return false;
 }
 
-function getEthereumProvider() {
-  return farcasterSdk?.wallet?.ethProvider || window.ethereum || null;
+async function getEthereumProvider() {
+  if (farcasterSdk?.wallet) {
+    try {
+      if (typeof farcasterSdk.wallet.getEthereumProvider === 'function') {
+        const p = await farcasterSdk.wallet.getEthereumProvider();
+        if (p) return p;
+      }
+    } catch (e) {
+      console.warn('[Farcaster] getEthereumProvider() error:', e);
+    }
+    if (farcasterSdk.wallet.ethProvider) {
+      return farcasterSdk.wallet.ethProvider;
+    }
+  }
+  return window.ethereum || null;
+}
+
+function getEthereumProviderSync() {
+  if (farcasterSdk?.wallet) {
+    if (typeof farcasterSdk.wallet.getEthereumProvider === 'function') {
+      try {
+        const p = farcasterSdk.wallet.getEthereumProvider();
+        if (p && typeof p.request === 'function') return p;
+      } catch (e) {}
+    }
+    if (farcasterSdk.wallet.ethProvider) {
+      return farcasterSdk.wallet.ethProvider;
+    }
+  }
+  return window.ethereum || null;
 }
 
 
@@ -36,6 +64,9 @@ function getEthereumProvider() {
       if (inMiniApp || isFarcasterEnv()) {
         window.isInsideFarcaster = true;
         isInsideFarcaster = true;
+        if (typeof setupFarcasterSwap === 'function') {
+          setupFarcasterSwap();
+        }
         console.log('[Farcaster] Running inside Farcaster MiniApp context');
         console.log('[Farcaster] Running inside Farcaster MiniApp context');
         await sdk.actions.ready();
@@ -54,7 +85,11 @@ function getEthereumProvider() {
         // Auto-connect inside Farcaster MiniApp
         setTimeout(async () => {
           try {
-            const provider = sdk.wallet?.ethProvider || window.ethereum;
+            let provider = null;
+            if (typeof sdk.wallet?.getEthereumProvider === 'function') {
+              try { provider = await sdk.wallet.getEthereumProvider(); } catch(e) {}
+            }
+            if (!provider) provider = sdk.wallet?.ethProvider || window.ethereum;
             if (provider) {
               const accounts = await provider.request({ method: 'eth_requestAccounts' });
               if (accounts && accounts.length > 0) {
@@ -423,7 +458,7 @@ function getEthereumProvider() {
     const minTokens = appConfig.minChatTokens || 10000000;
 
     // 1. Direct Web3 in-browser call via user wallet (instant, zero rate limits)
-    const provider = getEthereumProvider();
+    const provider = getEthereumProviderSync();
     if (provider && tokenAddr.startsWith('0x')) {
       try {
         const hexBal = await provider.request({
@@ -896,6 +931,9 @@ function getEthereumProvider() {
   // Initialization
   renderSaviors();
   renderJournal();
+  if (typeof setupFarcasterSwap === 'function') {
+    setupFarcasterSwap();
+  }
   loadConfiguration().then(() => {
     initThoughtFeed();
     loadJournal();
@@ -1128,3 +1166,11 @@ function setupFarcasterSwap() {
   }
 }
 
+// Auto-run setupFarcasterSwap immediately and on DOM load
+if (typeof setupFarcasterSwap === 'function') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupFarcasterSwap);
+  } else {
+    setupFarcasterSwap();
+  }
+}
