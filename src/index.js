@@ -1,5 +1,5 @@
 // Cloudflare Worker entrypoint for TTL Agent
-// Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect, /api/admin/seed)
+// Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect)
 // Scheduled hourly cron synthesis (0 * * * *) and dynamic learning memory
 //
 // Language policy: ALL code, comments, prompts, keys, and stored data are English only.
@@ -8,15 +8,15 @@
 //
 // State durability model (SPLIT-KEY — the durable fix):
 //   The single-object model (ttl_agent_state) let two writers race: the hourly cron
-//   (journal/memories) and the config/seed path (life/fee). A partial write from one
+//   (journal/memories) and the config path (life/fee). A partial write from one
 //   silently clobbered the other's fields — this is why journal entries vanished and
 //   deathTimestamp kept reverting to null. State is now split across THREE independent
 //   KV keys, each with its own targeted writer:
 //     • KEY_LIFE     ('ttl_life')     -> { launchTimestamp, totalFeesUsd, rawWethFees, extraHours, deathTimestamp }
 //     • KEY_JOURNAL  ('ttl_journal')  -> [ { day, time, text, stats }, ... ] (append-only, capped)
 //     • KEY_MEMORIES ('ttl_memories') -> [ axiom, ... ] (capped)
-//   The cron ONLY writes journal + memories (saveJournal / saveMemories). The seed/config
-//   path ONLY writes life (saveLife). Neither can ever overwrite the other's key.
+//   The cron ONLY writes journal + memories (saveJournal / saveMemories). The config
+//   path ONLY reads. Neither can ever overwrite the other's key.
 //   getState() reads all three, backfills any missing life field from DEFAULT_LIFE, and
 //   transparently migrates from the legacy ttl_agent_state object on first read.
 //
@@ -29,6 +29,11 @@
 //   4. self-reflection     — the system prompt instructs an internal reasoning pass before answering.
 //   5. grounded cron       — hourly logbook synthesis reuses the same live snapshot.
 //   6. [[FETCH:...]] hints — a second LLM pass resolves fetch tokens with verified data.
+//
+// NOTE: the temporary /api/admin/seed route was removed once deathTimestamp was persisted
+//       to KV. The absolute death epoch now lives durably in KEY_LIFE and only moves forward
+//       as fees are ingested. To adjust the life/fee fields again, reintroduce a guarded
+//       admin route or write KEY_LIFE via wrangler/KV tooling directly.
 
 const KEY_LIFE = 'ttl_life';
 const KEY_JOURNAL = 'ttl_journal';
@@ -39,8 +44,8 @@ const DEFAULT_LIFE = {
   launchTimestamp: 1789997500000,
   totalFeesUsd: 45.00,
   rawWethFees: 0.03298,
-  // deathTimestamp is intentionally null by default (time-relative); /api/admin/seed sets the
-  // absolute epoch, and /api/config falls back to baseHours+extraHours if it is ever missing.
+  // deathTimestamp is intentionally null by default (time-relative); it is set to an absolute
+  // epoch in KV, and /api/config falls back to baseHours+extraHours if it is ever missing.
   extraHours: 7.5,
   deathTimestamp: null
 };
@@ -496,42 +501,6 @@ export default {
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'public, max-age=15'
         }
-      });
-    }
-
-    // API: Admin seed / merge of life & fee fields into KV (guarded by SEED_SECRET).
-    // Writes ONLY the life key (KEY_LIFE) so journal/memories are never touched.
-    // Usage: POST /api/admin/seed?secret=... with JSON { deathTimestamp?, totalFeesUsd?, rawWethFees?, launchTimestamp?, extraHours? }
-    if (url.pathname === '/api/admin/seed' && request.method === 'POST') {
-      const secret = url.searchParams.get('secret') || request.headers.get('x-seed-secret') || '';
-      if (!env.SEED_SECRET || secret !== env.SEED_SECRET) {
-        return new Response(JSON.stringify({ error: 'FORBIDDEN' }), {
-          status: 403, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-      }
-      let patch = {};
-      try { patch = await request.json(); } catch (e) { patch = {}; }
-      const legacy = await readLegacy(env);
-      const life = await getLife(env, legacy);
-      if (patch.deathTimestamp !== undefined) life.deathTimestamp = Number(patch.deathTimestamp);
-      if (patch.totalFeesUsd !== undefined) life.totalFeesUsd = Number(patch.totalFeesUsd);
-      if (patch.rawWethFees !== undefined) life.rawWethFees = Number(patch.rawWethFees);
-      if (patch.launchTimestamp !== undefined) life.launchTimestamp = Number(patch.launchTimestamp);
-      if (patch.extraHours !== undefined) life.extraHours = Number(patch.extraHours);
-      await saveLife(env, life);
-      const verify = await getState(env);
-      return new Response(JSON.stringify({
-        ok: true,
-        hasKv: hasKv(env),
-        state: {
-          deathTimestamp: verify.deathTimestamp || null,
-          totalFeesUsd: verify.totalFeesUsd,
-          rawWethFees: verify.rawWethFees,
-          launchTimestamp: verify.launchTimestamp,
-          journalEntries: verify.journal.length
-        }
-      }), {
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
       });
     }
 
