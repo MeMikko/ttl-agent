@@ -286,16 +286,22 @@
     }
   }
 
-  const modalCloseBtn = document.getElementById("modal-close");
-  const journalModal = document.getElementById("journal-modal");
-  if (modalCloseBtn) modalCloseBtn.addEventListener("click", closeJournalModal);
-  if (journalModal) {
-    journalModal.addEventListener("click", (e) => {
-      if (e.target === journalModal) closeJournalModal();
-    });
-  }
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeJournalModal();
+  // Robust document-level event delegation for closing modal
+  document.addEventListener("click", function (e) {
+    const target = e.target;
+    if (!target) return;
+    if (target.id === "modal-close" || target.closest("#modal-close") || target.classList?.contains("modal-close-btn")) {
+      e.preventDefault();
+      closeJournalModal();
+    } else if (target.id === "journal-modal") {
+      closeJournalModal();
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      closeJournalModal();
+    }
   });
 
   // Copy Contract Address
