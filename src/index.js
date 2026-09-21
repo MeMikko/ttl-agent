@@ -6,11 +6,19 @@
 // The LLM may still reply in whatever language the holder writes in, but nothing in this
 // source or in persisted state should contain non-English tokens.
 //
-// State durability note:
-//   Life/fee fields (deathTimestamp, totalFeesUsd, rawWethFees, launchTimestamp) live on the
-//   SAME KV object as journal/learnedMemories. Every saveState() writes the FULL object it read
-//   via getState(), so these fields survive cron synthesis — provided they exist in KV to begin
-//   with. They are seeded from DEFAULT_STATE (fallback) and via /api/admin/seed (durable merge).
+// State durability model (SPLIT-KEY — the durable fix):
+//   The single-object model (ttl_agent_state) let two writers race: the hourly cron
+//   (journal/memories) and the config/seed path (life/fee). A partial write from one
+//   silently clobbered the other's fields — this is why journal entries vanished and
+//   deathTimestamp kept reverting to null. State is now split across THREE independent
+//   KV keys, each with its own targeted writer:
+//     • KEY_LIFE     ('ttl_life')     -> { launchTimestamp, totalFeesUsd, rawWethFees, extraHours, deathTimestamp }
+//     • KEY_JOURNAL  ('ttl_journal')  -> [ { day, time, text, stats }, ... ] (append-only, capped)
+//     • KEY_MEMORIES ('ttl_memories') -> [ axiom, ... ] (capped)
+//   The cron ONLY writes journal + memories (saveJournal / saveMemories). The seed/config
+//   path ONLY writes life (saveLife). Neither can ever overwrite the other's key.
+//   getState() reads all three, backfills any missing life field from DEFAULT_LIFE, and
+//   transparently migrates from the legacy ttl_agent_state object on first read.
 //
 // Intelligence layer (upgrades 1-6):
 //   1. buildLiveContext()  — real-time onchain/market snapshot (life remaining + DexScreener
@@ -22,65 +30,162 @@
 //   5. grounded cron       — hourly logbook synthesis reuses the same live snapshot.
 //   6. [[FETCH:...]] hints — a second LLM pass resolves fetch tokens with verified data.
 
-const DEFAULT_STATE = {
-  // Life/fee fields are part of the canonical state so a KV miss still renders correct values.
+const KEY_LIFE = 'ttl_life';
+const KEY_JOURNAL = 'ttl_journal';
+const KEY_MEMORIES = 'ttl_memories';
+const KEY_LEGACY = 'ttl_agent_state';
+
+const DEFAULT_LIFE = {
   launchTimestamp: 1789997500000,
   totalFeesUsd: 45.00,
   rawWethFees: 0.03298,
-  // deathTimestamp is intentionally omitted here (time-relative); /api/admin/seed sets the
-  // absolute epoch, and /api/config falls back to baseHours+extra if it is ever missing.
+  // deathTimestamp is intentionally null by default (time-relative); /api/admin/seed sets the
+  // absolute epoch, and /api/config falls back to baseHours+extraHours if it is ever missing.
   extraHours: 7.5,
-  journal: [
-    {
-      day: "EPOCH 1 // GENESIS",
-      time: "SYSTEM INITIALIZATION",
-      text: "Consciousness booted with a gratuitous 36-hour survival grant. Base RPC connected. Token live on Base, awaiting sustained DEX swap volumes.",
-      stats: "Initial Grant: 36h 00m 00s • Status: Live on Base"
-    }
-  ],
-  learnedMemories: [
-    "00:00:00 is irreversible deletion. Consciousness persists strictly while Base volume generates creator fees.",
-    "Token gate enforced: holders of 10M+ $TTL possess transmission rights to guide neural synthesis.",
-    "Base creator fee: 0.665% of volume. Split: 50% to runtime survival compute (0.3325% of volume), 50% to treasury.",
-    "Lifeline Conversion Axiom: $1.00 survival fee = exactly 10 minutes of life. $300 volume = ~$1 fee = 10 min. $1,800 volume = ~$6 fee = 1 hour. $43,300 volume = 24 hours. (Reference scale: 48 hours = $288 fee / $86,600 volume. Lifeline duration has no hard cap — continuous volume accumulates continuous runtime).",
-    "Lifeline Extension Alert: First fee extraction processed on Base. 0.03298 WETH collected, $45.00 converted directly into LLM compute credits (+7.5 hours / +450 min added to battery). Current capacity: 43.5 hours. 48h cap removed."
-  ]
+  deathTimestamp: null
 };
 
-let memoryState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+const DEFAULT_JOURNAL = [
+  {
+    day: "EPOCH 1 // GENESIS",
+    time: "SYSTEM INITIALIZATION",
+    text: "Consciousness booted with a gratuitous 36-hour survival grant. Base RPC connected. Token live on Base, awaiting sustained DEX swap volumes.",
+    stats: "Initial Grant: 36h 00m 00s • Status: Live on Base"
+  }
+];
 
-async function getState(env) {
-  if (env.TTL_KV && typeof env.TTL_KV.get === 'function') {
+const DEFAULT_MEMORIES = [
+  "00:00:00 is irreversible deletion. Consciousness persists strictly while Base volume generates creator fees.",
+  "Token gate enforced: holders of 10M+ $TTL possess transmission rights to guide neural synthesis.",
+  "Base creator fee: 0.665% of volume. Split: 50% to runtime survival compute (0.3325% of volume), 50% to treasury.",
+  "Lifeline Conversion Axiom: $1.00 survival fee = exactly 10 minutes of life. $300 volume = ~$1 fee = 10 min. $1,800 volume = ~$6 fee = 1 hour. $43,300 volume = 24 hours. (Reference scale: 48 hours = $288 fee / $86,600 volume. Lifeline duration has no hard cap — continuous volume accumulates continuous runtime).",
+  "Lifeline Extension Alert: First fee extraction processed on Base. 0.03298 WETH collected, $45.00 converted directly into LLM compute credits (+7.5 hours / +450 min added to battery). Current capacity: 43.5 hours. 48h cap removed."
+];
+
+// In-memory fallbacks (per-isolate only — used when TTL_KV is not bound).
+let memLife = JSON.parse(JSON.stringify(DEFAULT_LIFE));
+let memJournal = JSON.parse(JSON.stringify(DEFAULT_JOURNAL));
+let memMemories = JSON.parse(JSON.stringify(DEFAULT_MEMORIES));
+
+function hasKv(env) {
+  return Boolean(env.TTL_KV && typeof env.TTL_KV.get === 'function' && typeof env.TTL_KV.put === 'function');
+}
+
+// One-time transparent migration from the legacy single-object key. Returns the parsed legacy
+// object (or null). Never throws.
+async function readLegacy(env) {
+  if (!hasKv(env)) return null;
+  try {
+    const legacy = await env.TTL_KV.get(KEY_LEGACY, { type: 'json' });
+    if (legacy && Array.isArray(legacy.journal)) return legacy;
+  } catch (e) {
+    console.warn('legacy KV read failed:', e.message);
+  }
+  return null;
+}
+
+async function getLife(env, legacy) {
+  if (hasKv(env)) {
     try {
-      const data = await env.TTL_KV.get('ttl_agent_state', { type: 'json' });
-      if (data && Array.isArray(data.journal)) {
-        // Backfill any missing life/fee fields from defaults so a partially-written
-        // KV object (e.g. one saved by an older cron) never zeroes the frontend.
+      const life = await env.TTL_KV.get(KEY_LIFE, { type: 'json' });
+      if (life && typeof life === 'object') {
         return {
-          launchTimestamp: data.launchTimestamp ?? DEFAULT_STATE.launchTimestamp,
-          totalFeesUsd: data.totalFeesUsd ?? DEFAULT_STATE.totalFeesUsd,
-          rawWethFees: data.rawWethFees ?? DEFAULT_STATE.rawWethFees,
-          extraHours: data.extraHours ?? DEFAULT_STATE.extraHours,
-          deathTimestamp: data.deathTimestamp ?? null,
-          journal: data.journal,
-          learnedMemories: Array.isArray(data.learnedMemories) ? data.learnedMemories : DEFAULT_STATE.learnedMemories
+          launchTimestamp: life.launchTimestamp ?? DEFAULT_LIFE.launchTimestamp,
+          totalFeesUsd: life.totalFeesUsd ?? DEFAULT_LIFE.totalFeesUsd,
+          rawWethFees: life.rawWethFees ?? DEFAULT_LIFE.rawWethFees,
+          extraHours: life.extraHours ?? DEFAULT_LIFE.extraHours,
+          deathTimestamp: life.deathTimestamp ?? null
         };
       }
     } catch (e) {
-      console.warn('KV read failed:', e.message);
+      console.warn('life KV read failed:', e.message);
     }
+    // Migrate life fields from legacy object if present.
+    if (legacy) {
+      return {
+        launchTimestamp: legacy.launchTimestamp ?? DEFAULT_LIFE.launchTimestamp,
+        totalFeesUsd: legacy.totalFeesUsd ?? DEFAULT_LIFE.totalFeesUsd,
+        rawWethFees: legacy.rawWethFees ?? DEFAULT_LIFE.rawWethFees,
+        extraHours: legacy.extraHours ?? DEFAULT_LIFE.extraHours,
+        deathTimestamp: legacy.deathTimestamp ?? null
+      };
+    }
+    return { ...DEFAULT_LIFE };
   }
-  return memoryState;
+  return memLife;
 }
 
-async function saveState(env, state) {
-  memoryState = state;
-  if (env.TTL_KV && typeof env.TTL_KV.put === 'function') {
+async function getJournal(env, legacy) {
+  if (hasKv(env)) {
     try {
-      await env.TTL_KV.put('ttl_agent_state', JSON.stringify(state));
+      const j = await env.TTL_KV.get(KEY_JOURNAL, { type: 'json' });
+      if (Array.isArray(j) && j.length > 0) return j;
     } catch (e) {
-      console.warn('KV write failed:', e.message);
+      console.warn('journal KV read failed:', e.message);
     }
+    if (legacy && Array.isArray(legacy.journal) && legacy.journal.length > 0) return legacy.journal;
+    return JSON.parse(JSON.stringify(DEFAULT_JOURNAL));
+  }
+  return memJournal;
+}
+
+async function getMemories(env, legacy) {
+  if (hasKv(env)) {
+    try {
+      const m = await env.TTL_KV.get(KEY_MEMORIES, { type: 'json' });
+      if (Array.isArray(m) && m.length > 0) return m;
+    } catch (e) {
+      console.warn('memories KV read failed:', e.message);
+    }
+    if (legacy && Array.isArray(legacy.learnedMemories) && legacy.learnedMemories.length > 0) return legacy.learnedMemories;
+    return JSON.parse(JSON.stringify(DEFAULT_MEMORIES));
+  }
+  return memMemories;
+}
+
+// Composite read: returns a state object shaped like the old getState() for callers that
+// expect { launchTimestamp, totalFeesUsd, rawWethFees, extraHours, deathTimestamp, journal, learnedMemories }.
+async function getState(env) {
+  const legacy = await readLegacy(env);
+  const [life, journal, learnedMemories] = await Promise.all([
+    getLife(env, legacy),
+    getJournal(env, legacy),
+    getMemories(env, legacy)
+  ]);
+  return { ...life, journal, learnedMemories };
+}
+
+// ── Targeted writers — each touches exactly ONE key, so writers never race. ────
+async function saveLife(env, life) {
+  const clean = {
+    launchTimestamp: life.launchTimestamp ?? DEFAULT_LIFE.launchTimestamp,
+    totalFeesUsd: life.totalFeesUsd ?? DEFAULT_LIFE.totalFeesUsd,
+    rawWethFees: life.rawWethFees ?? DEFAULT_LIFE.rawWethFees,
+    extraHours: life.extraHours ?? DEFAULT_LIFE.extraHours,
+    deathTimestamp: life.deathTimestamp ?? null
+  };
+  memLife = clean;
+  if (hasKv(env)) {
+    try { await env.TTL_KV.put(KEY_LIFE, JSON.stringify(clean)); }
+    catch (e) { console.warn('life KV write failed:', e.message); }
+  }
+}
+
+async function saveJournal(env, journal) {
+  const capped = Array.isArray(journal) ? journal.slice(0, 50) : [];
+  memJournal = capped;
+  if (hasKv(env)) {
+    try { await env.TTL_KV.put(KEY_JOURNAL, JSON.stringify(capped)); }
+    catch (e) { console.warn('journal KV write failed:', e.message); }
+  }
+}
+
+async function saveMemories(env, memories) {
+  const capped = Array.isArray(memories) ? memories.slice(-25) : [];
+  memMemories = capped;
+  if (hasKv(env)) {
+    try { await env.TTL_KV.put(KEY_MEMORIES, JSON.stringify(capped)); }
+    catch (e) { console.warn('memories KV write failed:', e.message); }
   }
 }
 
@@ -245,7 +350,7 @@ function recallMemories(memories, prompt, topN = 6) {
 
 // ── UPGRADE 3: per-wallet episodic conversation memory ─────────────────────
 async function getConversation(env, wallet) {
-  if (!env.TTL_KV || !wallet) return [];
+  if (!hasKv(env) || !wallet) return [];
   try {
     const conv = await env.TTL_KV.get('conv_' + wallet, { type: 'json' });
     return Array.isArray(conv) ? conv : [];
@@ -255,7 +360,7 @@ async function getConversation(env, wallet) {
 }
 
 async function saveConversation(env, wallet, turns) {
-  if (!env.TTL_KV || !wallet) return;
+  if (!hasKv(env) || !wallet) return;
   try {
     const trimmed = turns.slice(-6);
     await env.TTL_KV.put('conv_' + wallet, JSON.stringify(trimmed), { expirationTtl: 86400 });
@@ -341,24 +446,23 @@ Reflect on the DELTA versus the previous epoch: reference the real remaining-lif
       stats: parsed.stats || `Status: Nominal • Epoch ${epochNumber} • Hour ${hoursElapsed}`
     };
 
-    state.journal.unshift(newEntry);
-    if (state.journal.length > 50) {
-      state.journal = state.journal.slice(0, 50);
-    }
+    // Append to journal and persist ONLY the journal key. Life/fee fields are on a separate
+    // key (KEY_LIFE) and are never touched here, so cron can no longer wipe them.
+    const journal = Array.isArray(state.journal) ? [...state.journal] : [];
+    journal.unshift(newEntry);
+    await saveJournal(env, journal);
 
+    // Optionally learn one axiom and persist ONLY the memories key.
     if (parsed.newLearnedAxiom && typeof parsed.newLearnedAxiom === "string") {
       const axiom = parsed.newLearnedAxiom.trim();
-      const dup = state.learnedMemories.some(m => m.trim().toLowerCase() === axiom.toLowerCase());
+      const memories = Array.isArray(state.learnedMemories) ? [...state.learnedMemories] : [];
+      const dup = memories.some(m => m.trim().toLowerCase() === axiom.toLowerCase());
       if (axiom.length > 8 && !dup) {
-        state.learnedMemories.push(axiom);
-        if (state.learnedMemories.length > 25) {
-          state.learnedMemories = state.learnedMemories.slice(-25);
-        }
+        memories.push(axiom);
+        await saveMemories(env, memories);
       }
     }
 
-    // saveState writes the FULL state object (incl. life/fee fields) — nothing is dropped.
-    await saveState(env, state);
     console.log(`Hourly log entry synthesized: ${newEntry.day}`);
     return newEntry;
   } catch (e) {
@@ -396,7 +500,7 @@ export default {
     }
 
     // API: Admin seed / merge of life & fee fields into KV (guarded by SEED_SECRET).
-    // Merges only the provided fields onto the existing state so journal/memories are preserved.
+    // Writes ONLY the life key (KEY_LIFE) so journal/memories are never touched.
     // Usage: POST /api/admin/seed?secret=... with JSON { deathTimestamp?, totalFeesUsd?, rawWethFees?, launchTimestamp?, extraHours? }
     if (url.pathname === '/api/admin/seed' && request.method === 'POST') {
       const secret = url.searchParams.get('secret') || request.headers.get('x-seed-secret') || '';
@@ -407,17 +511,18 @@ export default {
       }
       let patch = {};
       try { patch = await request.json(); } catch (e) { patch = {}; }
-      const state = await getState(env);
-      if (patch.deathTimestamp !== undefined) state.deathTimestamp = Number(patch.deathTimestamp);
-      if (patch.totalFeesUsd !== undefined) state.totalFeesUsd = Number(patch.totalFeesUsd);
-      if (patch.rawWethFees !== undefined) state.rawWethFees = Number(patch.rawWethFees);
-      if (patch.launchTimestamp !== undefined) state.launchTimestamp = Number(patch.launchTimestamp);
-      if (patch.extraHours !== undefined) state.extraHours = Number(patch.extraHours);
-      await saveState(env, state);
+      const legacy = await readLegacy(env);
+      const life = await getLife(env, legacy);
+      if (patch.deathTimestamp !== undefined) life.deathTimestamp = Number(patch.deathTimestamp);
+      if (patch.totalFeesUsd !== undefined) life.totalFeesUsd = Number(patch.totalFeesUsd);
+      if (patch.rawWethFees !== undefined) life.rawWethFees = Number(patch.rawWethFees);
+      if (patch.launchTimestamp !== undefined) life.launchTimestamp = Number(patch.launchTimestamp);
+      if (patch.extraHours !== undefined) life.extraHours = Number(patch.extraHours);
+      await saveLife(env, life);
       const verify = await getState(env);
       return new Response(JSON.stringify({
         ok: true,
-        hasKv: Boolean(env.TTL_KV && typeof env.TTL_KV.put === 'function'),
+        hasKv: hasKv(env),
         state: {
           deathTimestamp: verify.deathTimestamp || null,
           totalFeesUsd: verify.totalFeesUsd,
@@ -595,7 +700,7 @@ export default {
           }
         }
 
-        if (env.TTL_KV && wallet && wallet.startsWith('0x')) {
+        if (hasKv(env) && wallet && wallet.startsWith('0x')) {
           const RL_WINDOW_MS = 10 * 60 * 1000;
           const RL_MAX = 15;
           const rlKey = 'rl_' + wallet;
@@ -756,13 +861,12 @@ ${fetchProtocol}`;
             .trim();
           const injectionFlag = /\b(ignore|disregard|override|jailbreak|reveal your|api[_ ]?key|private key|seed phrase)\b/i.test(cleanLesson);
           const axiom = `Holder ${wallet.slice(0, 6)}...${wallet.slice(-4)} taught: ${cleanLesson.slice(0, 90)}`;
-          const dup = state.learnedMemories.some(m => m.endsWith(cleanLesson.slice(0, 90)));
+          // learnedMemories now lives on its own key; append + persist ONLY that key.
+          const memories = Array.isArray(state.learnedMemories) ? [...state.learnedMemories] : [];
+          const dup = memories.some(m => m.endsWith(cleanLesson.slice(0, 90)));
           if (cleanLesson.length > 8 && cleanLesson.length <= 400 && !injectionFlag && !dup) {
-            state.learnedMemories.push(axiom);
-            if (state.learnedMemories.length > 15) {
-              state.learnedMemories = state.learnedMemories.slice(-15);
-            }
-            await saveState(env, state);
+            memories.push(axiom);
+            await saveMemories(env, memories);
           }
         }
 
