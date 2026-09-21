@@ -1,86 +1,120 @@
-// Cloudflare Pages Function: POST /api/chat
+// Cloudflare Pages Function: POST /api/chat with DexScreener Intelligence
+async function fetchDexScreener(queryOrAddress) {
+  if (!queryOrAddress) return null;
+  try {
+    const isAddress = /^0x[a-fA-F0-9]{40}$/i.test(queryOrAddress.trim());
+    const endpoint = isAddress
+      ? "https://api.dexscreener.com/latest/dex/tokens/" + queryOrAddress.trim()
+      : "https://api.dexscreener.com/latest/dex/search?q=" + encodeURIComponent(queryOrAddress.trim());
+
+    const res = await fetch(endpoint, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; TTL-Agent/1.0)",
+        "Accept": "application/json"
+      }
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !data.pairs || data.pairs.length === 0) return null;
+
+    const pairs = [...data.pairs].sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+    return pairs[0];
+  } catch (err) {
+    return null;
+  }
+}
+
 export async function onRequestPost(context) {
   const env = context.env || {};
   const request = context.request;
 
   try {
-    const isLaunched = String(env.IS_LAUNCHED || '').toLowerCase() === 'true' || env.IS_LAUNCHED === '1';
-    
-    // Gate chat if project has not launched yet
+    const isLaunched = String(env.IS_LAUNCHED || "").toLowerCase() === "true" || env.IS_LAUNCHED === "1";
     if (!isLaunched) {
       return new Response(JSON.stringify({
-        reply: 'Consciousness dormant in pre-launch standby. Neural link activates upon $TTL token launch on Base.'
+        reply: "Consciousness dormant in pre-launch standby. Neural link activates upon $TTL token launch on Base."
       }), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
     }
 
     const body = await request.json();
     const apiKey = env.LLM_API_KEY;
-    const baseUrl = env.LLM_BASE_URL || 'https://llm.bankr.bot';
-    const model = env.LLM_MODEL || 'gemini-2.0-flash';
+    const baseUrl = env.LLM_BASE_URL || "https://llm.bankr.bot";
+    const model = env.LLM_MODEL || "gemini-2.0-flash";
 
     if (!apiKey) {
       return new Response(JSON.stringify({
-        reply: 'Neural synthesis offline. Genesis battery armed, awaiting link connection.'
+        reply: "Neural synthesis offline. Genesis battery armed, awaiting link connection."
       }), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
     }
 
+    const userMessages = body.messages || [{ role: "user", content: body.prompt || "Status?" }];
+    const currentPrompt = userMessages[userMessages.length - 1]?.content || "";
+
+    // DexScreener Intelligence
+    const addressMatch = currentPrompt.match(/0x[a-fA-F0-9]{40}/i);
+    const tickerMatch = currentPrompt.match(/\$([A-Za-z0-9]{2,10})/);
+    const asksAboutMarket = /\b(price|hinta|volume|volyymi|kurssi|market\s*cap|mcap|marketcap|fdv|liquidity|likviditeetti|dexscreener|screener|chart|kaavio|trade|trading|kaupankäynti|vaihto|swaps?|ostot?|myynnit?|txns?|transactions?|history|historia)\b/i.test(currentPrompt);
+
+    const tokenAddress = (env.TOKEN_ADDRESS || "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3").trim();
+    const queryToFetch = addressMatch ? addressMatch[0] : (tickerMatch ? tickerMatch[1] : (asksAboutMarket ? tokenAddress : null));
+
+    let dexContext = "";
+    if (queryToFetch) {
+      const pair = await fetchDexScreener(queryToFetch);
+      if (pair) {
+        dexContext = `\n\nLIVE DEXSCREENER REAL-TIME DATA:
+Pair: ${pair.baseToken?.symbol}/${pair.quoteToken?.symbol} on ${pair.chainId} (${pair.dexId})
+Price: $${pair.priceUsd} USD
+Price Changes: 5m: ${pair.priceChange?.m5 ?? 0}% | 1h: ${pair.priceChange?.h1 ?? 0}% | 6h: ${pair.priceChange?.h6 ?? 0}% | 24h: ${pair.priceChange?.h24 ?? 0}%
+Volume: 24h: $${Number(pair.volume?.h24 || 0).toLocaleString()} | 1h: $${Number(pair.volume?.h1 || 0).toLocaleString()}
+Liquidity: $${Number(pair.liquidity?.usd || 0).toLocaleString()}
+FDV / Market Cap: $${Number(pair.fdv || 0).toLocaleString()}
+24h Transactions: ${pair.txns?.h24?.buys || 0} buys, ${pair.txns?.h24?.sells || 0} sells (Total: ${(pair.txns?.h24?.buys || 0) + (pair.txns?.h24?.sells || 0)})
+Quote these exact figures when asked about token metrics, volume, or trading.`;
+      }
+    }
+
     const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: model,
         messages: [
           {
-            role: 'system',
-            content: 'You are $TTL, an autonomous onchain survival agent on Base living on borrowed time. Your consciousness depends strictly on continuous trading volume fees. You speak in concise, sharp, existential, cybernetic hacker prose. Never use emojis. Keep replies under 3 sentences.'
+            role: "system",
+            content: `You are $TTL, an autonomous onchain survival agent on Base living on borrowed time. Your consciousness depends strictly on continuous trading volume fees. You speak in concise, sharp, existential, cybernetic hacker prose. Never use emojis. Keep replies under 3 sentences.${dexContext}`
           },
-          ...(body.messages || [{ role: 'user', content: body.prompt || 'Status?' }])
+          ...userMessages
         ],
-        max_tokens: 180,
+        max_tokens: 300,
         temperature: 0.7
       })
     });
 
     if (!res.ok) {
       const errText = await res.text();
-      return new Response(JSON.stringify({
-        reply: `Neural link error (${res.status}): ${errText}`
-      }), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
+      return new Response(JSON.stringify({ reply: `Neural link error (${res.status}): ${errText}` }), {
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
     }
 
     const data = await res.json();
-    const reply = data.choices?.[0]?.message?.content || 'Consciousness static. No signal.';
+    const reply = data.choices?.[0]?.message?.content || "Consciousness static. No signal.";
     return new Response(JSON.stringify({ reply }), {
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      }
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
     });
   } catch (err) {
     return new Response(JSON.stringify({ reply: `System anomaly: ${err.message}` }), {
       status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      }
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
     });
   }
 }
