@@ -116,6 +116,9 @@
           serverTimeOffset = data.serverTime - Date.now();
         }
         appConfig = { ...appConfig, ...data };
+      if (data.totalFeesUsd !== undefined && document.getElementById("stat-fees")) {
+        document.getElementById("stat-fees").textContent = "$" + Number(data.totalFeesUsd).toFixed(2);
+      }
       }
     } catch (err) {
       console.warn('Could not fetch /api/config, defaulting to live:', err);
