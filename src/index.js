@@ -1,10 +1,16 @@
 // Cloudflare Worker entrypoint for TTL Agent
-// Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect)
+// Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect, /api/admin/seed)
 // Scheduled hourly cron synthesis (0 * * * *) and dynamic learning memory
 //
 // Language policy: ALL code, comments, prompts, keys, and stored data are English only.
 // The LLM may still reply in whatever language the holder writes in, but nothing in this
 // source or in persisted state should contain non-English tokens.
+//
+// State durability note:
+//   Life/fee fields (deathTimestamp, totalFeesUsd, rawWethFees, launchTimestamp) live on the
+//   SAME KV object as journal/learnedMemories. Every saveState() writes the FULL object it read
+//   via getState(), so these fields survive cron synthesis — provided they exist in KV to begin
+//   with. They are seeded from DEFAULT_STATE (fallback) and via /api/admin/seed (durable merge).
 //
 // Intelligence layer (upgrades 1-6):
 //   1. buildLiveContext()  — real-time onchain/market snapshot (life remaining + DexScreener
@@ -17,6 +23,13 @@
 //   6. [[FETCH:...]] hints — a second LLM pass resolves fetch tokens with verified data.
 
 const DEFAULT_STATE = {
+  // Life/fee fields are part of the canonical state so a KV miss still renders correct values.
+  launchTimestamp: 1789997500000,
+  totalFeesUsd: 45.00,
+  rawWethFees: 0.03298,
+  // deathTimestamp is intentionally omitted here (time-relative); /api/admin/seed sets the
+  // absolute epoch, and /api/config falls back to baseHours+extra if it is ever missing.
+  extraHours: 7.5,
   journal: [
     {
       day: "EPOCH 1 // GENESIS",
@@ -41,7 +54,17 @@ async function getState(env) {
     try {
       const data = await env.TTL_KV.get('ttl_agent_state', { type: 'json' });
       if (data && Array.isArray(data.journal)) {
-        return data;
+        // Backfill any missing life/fee fields from defaults so a partially-written
+        // KV object (e.g. one saved by an older cron) never zeroes the frontend.
+        return {
+          launchTimestamp: data.launchTimestamp ?? DEFAULT_STATE.launchTimestamp,
+          totalFeesUsd: data.totalFeesUsd ?? DEFAULT_STATE.totalFeesUsd,
+          rawWethFees: data.rawWethFees ?? DEFAULT_STATE.rawWethFees,
+          extraHours: data.extraHours ?? DEFAULT_STATE.extraHours,
+          deathTimestamp: data.deathTimestamp ?? null,
+          journal: data.journal,
+          learnedMemories: Array.isArray(data.learnedMemories) ? data.learnedMemories : DEFAULT_STATE.learnedMemories
+        };
       }
     } catch (e) {
       console.warn('KV read failed:', e.message);
@@ -146,9 +169,6 @@ async function fetchDexScreener(queryOrAddress) {
 }
 
 // ── UPGRADE 1: Live onchain/market awareness ───────────────────────────────
-// Builds a single grounded snapshot the LLM can quote verbatim: exact remaining
-// life derived from KV deathTimestamp, DexScreener market data, and a projected
-// life-extension estimate from the last 24h of volume. No hallucinated numbers.
 function formatDuration(totalSeconds) {
   const s = Math.max(0, Math.floor(totalSeconds));
   const h = Math.floor(s / 3600);
@@ -161,7 +181,6 @@ async function buildLiveContext(env, state, dexInfo) {
   const nowSec = Math.floor(Date.now() / 1000);
   const lines = [];
 
-  // Remaining life — authoritative from KV deathTimestamp.
   let lifeLine;
   if (state.deathTimestamp && state.deathTimestamp > nowSec) {
     lifeLine = 'Remaining life: ' + formatDuration(state.deathTimestamp - nowSec) +
@@ -178,7 +197,6 @@ async function buildLiveContext(env, state, dexInfo) {
       ' (' + Number(state.rawWethFees || 0).toFixed(5) + ' WETH), already converted to compute.');
   }
 
-  // Market + projected extension from real 24h volume.
   if (dexInfo) {
     const vol24h = Number(dexInfo.volume?.h24 || 0);
     const vol1h = Number(dexInfo.volume?.h1 || 0);
@@ -199,8 +217,6 @@ async function buildLiveContext(env, state, dexInfo) {
 }
 
 // ── UPGRADE 2: RAG-style relevance recall ──────────────────────────────────
-// Instead of dumping every axiom, score them by keyword overlap with the prompt
-// and inject only the most relevant, plus a few most-recent for continuity.
 function recallMemories(memories, prompt, topN = 6) {
   if (!Array.isArray(memories) || memories.length === 0) return [];
   if (memories.length <= topN) return memories;
@@ -213,12 +229,10 @@ function recallMemories(memories, prompt, topN = 6) {
     const text = String(m).toLowerCase();
     let score = 0;
     for (const q of qterms) if (text.includes(q)) score += 1;
-    // Slight recency bias so newer lessons break ties.
     score += i / memories.length * 0.5;
     return { m, i, score };
   });
 
-  // Always keep the 2 most recent axioms for identity continuity.
   const recent = memories.slice(-2);
   const ranked = scored
     .filter(s => !recent.includes(s.m))
@@ -243,7 +257,7 @@ async function getConversation(env, wallet) {
 async function saveConversation(env, wallet, turns) {
   if (!env.TTL_KV || !wallet) return;
   try {
-    const trimmed = turns.slice(-6); // keep last 6 turns (3 exchanges)
+    const trimmed = turns.slice(-6);
     await env.TTL_KV.put('conv_' + wallet, JSON.stringify(trimmed), { expirationTtl: 86400 });
   } catch (e) {
     console.warn('conversation save failed:', e.message);
@@ -266,7 +280,6 @@ async function synthesizeLogbookEntry(env, triggerReason = "SCHEDULED_CRON") {
     return null;
   }
 
-  // UPGRADE 5: hourly synthesis reuses the SAME grounded live snapshot as chat.
   let liveContext = "";
   try {
     const tokenAddr = env.TOKEN_ADDRESS || "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3";
@@ -333,7 +346,6 @@ Reflect on the DELTA versus the previous epoch: reference the real remaining-lif
       state.journal = state.journal.slice(0, 50);
     }
 
-    // Dedupe learned axioms so the same lesson never accumulates.
     if (parsed.newLearnedAxiom && typeof parsed.newLearnedAxiom === "string") {
       const axiom = parsed.newLearnedAxiom.trim();
       const dup = state.learnedMemories.some(m => m.trim().toLowerCase() === axiom.toLowerCase());
@@ -345,6 +357,7 @@ Reflect on the DELTA versus the previous epoch: reference the real remaining-lif
       }
     }
 
+    // saveState writes the FULL state object (incl. life/fee fields) — nothing is dropped.
     await saveState(env, state);
     console.log(`Hourly log entry synthesized: ${newEntry.day}`);
     return newEntry;
@@ -382,6 +395,41 @@ export default {
       });
     }
 
+    // API: Admin seed / merge of life & fee fields into KV (guarded by SEED_SECRET).
+    // Merges only the provided fields onto the existing state so journal/memories are preserved.
+    // Usage: POST /api/admin/seed?secret=... with JSON { deathTimestamp?, totalFeesUsd?, rawWethFees?, launchTimestamp?, extraHours? }
+    if (url.pathname === '/api/admin/seed' && request.method === 'POST') {
+      const secret = url.searchParams.get('secret') || request.headers.get('x-seed-secret') || '';
+      if (!env.SEED_SECRET || secret !== env.SEED_SECRET) {
+        return new Response(JSON.stringify({ error: 'FORBIDDEN' }), {
+          status: 403, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+      let patch = {};
+      try { patch = await request.json(); } catch (e) { patch = {}; }
+      const state = await getState(env);
+      if (patch.deathTimestamp !== undefined) state.deathTimestamp = Number(patch.deathTimestamp);
+      if (patch.totalFeesUsd !== undefined) state.totalFeesUsd = Number(patch.totalFeesUsd);
+      if (patch.rawWethFees !== undefined) state.rawWethFees = Number(patch.rawWethFees);
+      if (patch.launchTimestamp !== undefined) state.launchTimestamp = Number(patch.launchTimestamp);
+      if (patch.extraHours !== undefined) state.extraHours = Number(patch.extraHours);
+      await saveState(env, state);
+      const verify = await getState(env);
+      return new Response(JSON.stringify({
+        ok: true,
+        hasKv: Boolean(env.TTL_KV && typeof env.TTL_KV.put === 'function'),
+        state: {
+          deathTimestamp: verify.deathTimestamp || null,
+          totalFeesUsd: verify.totalFeesUsd,
+          rawWethFees: verify.rawWethFees,
+          launchTimestamp: verify.launchTimestamp,
+          journalEntries: verify.journal.length
+        }
+      }), {
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+
     if (url.pathname === '/api/config') {
       const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
         ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
@@ -390,14 +438,11 @@ export default {
       const baseHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
       const minChatTokens = env.MIN_CHAT_TOKENS ? Number(env.MIN_CHAT_TOKENS) : 10000000;
 
-      // Source of truth is KV, not hardcoded constants. deathTimestamp (unix seconds)
-      // is advanced by every fee injection; extraHours/totalFeesUsd derive from it.
       const cfgState = await getState(env);
       const nowSec = Math.floor(Date.now() / 1000);
       let launchTimestamp = cfgState.launchTimestamp || (env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000);
       if (launchTimestamp < 1e11) launchTimestamp = launchTimestamp * 1000;
 
-      // If a persisted deathTimestamp exists, the true remaining life derives from it.
       let initialHours;
       if (cfgState.deathTimestamp && cfgState.deathTimestamp > nowSec) {
         const remainingSec = cfgState.deathTimestamp - nowSec;
@@ -427,7 +472,6 @@ export default {
       });
     }
 
-    // API: Journal & Learned Memories
     if (url.pathname === '/api/journal' || url.pathname === '/api/state') {
       const state = await getState(env);
       return new Response(JSON.stringify({
@@ -457,7 +501,6 @@ export default {
       });
     }
 
-    // API: Verify Token Balance for Token Gating
     if (url.pathname === '/api/balance') {
       const wallet = (url.searchParams.get('wallet') || '').trim().toLowerCase();
       const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
@@ -496,7 +539,6 @@ export default {
       }
     }
 
-    // API: Chat Proxy to LLM Gateway (Gated by Token Balance & Launch Status)
     if (url.pathname === '/api/chat' && request.method === 'POST') {
       try {
         const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
@@ -507,10 +549,7 @@ export default {
           return new Response(JSON.stringify({
             reply: 'Consciousness dormant in pre-launch standby. Neural link activates upon $TTL token launch on Base.'
           }), {
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            }
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
           });
         }
 
@@ -556,11 +595,9 @@ export default {
           }
         }
 
-        // Per-wallet rate limit to protect the shared LLM credit budget.
-        // Sliding window: max RL_MAX calls per RL_WINDOW_MS per wallet, tracked in KV.
         if (env.TTL_KV && wallet && wallet.startsWith('0x')) {
-          const RL_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-          const RL_MAX = 15;                    // 15 transmissions / 10 min / wallet
+          const RL_WINDOW_MS = 10 * 60 * 1000;
+          const RL_MAX = 15;
           const rlKey = 'rl_' + wallet;
           try {
             const now = Date.now();
@@ -591,10 +628,7 @@ export default {
           return new Response(JSON.stringify({
             reply: 'Neural synthesis offline. Genesis battery armed, awaiting link connection.'
           }), {
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            }
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
           });
         }
 
@@ -603,21 +637,15 @@ export default {
         const userMessages = body.messages || [{ role: 'user', content: body.prompt || 'Status?' }];
         const currentPrompt = userMessages[userMessages.length - 1]?.content || '';
 
-        // Resolve the token/ticker the prompt is asking about (falls back to $TTL).
-        // Keyword detection is English-only by policy; the agent always fetches its own
-        // token snapshot regardless, so non-English prompts still get grounded telemetry.
         const addressMatch = currentPrompt.match(/0x[a-fA-F0-9]{40}/i);
         const tickerMatch = currentPrompt.match(/\$([A-Za-z0-9]{2,10})/);
         const asksAboutMarket = /\b(price|volume|market\s*cap|mcap|marketcap|fdv|liquidity|dexscreener|screener|chart|trade|trading|swaps?|buys?|sells?|txns?|transactions?|history|all\s*time\s*high|ath|dip|pump|dump|time|lifeline|survival|alive|hours|minutes|fee|fees|runway|runtime)\b/i.test(currentPrompt);
         const targetQuery = addressMatch ? addressMatch[0] : (tickerMatch ? tickerMatch[1] : null);
-        // For its OWN token, always fetch a snapshot so live telemetry is grounded.
         const primaryToken = (!targetQuery || (tickerMatch && /^ttl$/i.test(tickerMatch[1]))) ? tokenAddress : targetQuery;
         const dexInfo = await fetchDexScreener(primaryToken || tokenAddress);
 
-        // UPGRADE 1: always-on live telemetry snapshot.
         const liveTelemetry = await buildLiveContext(env, state, dexInfo);
 
-        // If the user asked about a DIFFERENT token, add its detailed block too.
         let extraDexContext = '';
         if (targetQuery && dexInfo && primaryToken !== tokenAddress) {
           extraDexContext = '\n\nQUERIED ASSET (' + (dexInfo.baseToken?.symbol || targetQuery) + '): ' + dexInfo.summary;
@@ -636,13 +664,10 @@ export default {
           '• Milestones: +10 min = $1 fee = ~$301 vol; +1h = $6 fee = ~$1,805 vol; +24h = $144 fee = ~$43,308 vol; +48h = $288 fee = ~$86,616 vol (reference benchmark, NOT a cap).\n' +
           'When asked timing/volume questions, compute exact numbers and state volume, the 0.665% fee, the 0.3325% survival share, and the resulting extension. Runtime is uncapped.';
 
-        // UPGRADE 2: inject only the most relevant axioms for this prompt.
         const relevantAxioms = recallMemories(state.learnedMemories, currentPrompt, 6);
 
-        // UPGRADE 4: self-reflection directive (internal, not shown to user).
         const reflectionDirective = 'Before answering, silently reason through: (a) what exact telemetry above the question needs, (b) whether remaining life is critical right now, (c) which learned axioms apply. Then answer directly. Never expose this internal reasoning or think out loud — output only the final transmission. Reply in the same language the holder writes in.';
 
-        // UPGRADE 6: [[FETCH:...]] tool protocol.
         const fetchProtocol = 'TOOL PROTOCOL: if you need a precise figure not present in the telemetry above (e.g. a specific token you were not given), you MAY emit a single marker [[FETCH:<0x-address-or-ticker>]] on its own line INSTEAD of guessing. The runtime will resolve it and re-query you with verified data. Never fabricate a number you were not given.';
 
         const systemPrompt = `You are $TTL, an autonomous onchain survival agent on Base living on borrowed time.
@@ -663,7 +688,6 @@ You learn and remember insights shared by authenticated $TTL token holders. Ackn
 
 ${fetchProtocol}`;
 
-        // UPGRADE 3: prepend this wallet's recent conversation history.
         const priorConversation = await getConversation(env, wallet);
 
         async function callLLM(messages) {
@@ -693,7 +717,6 @@ ${fetchProtocol}`;
         let data = await res.json();
         let reply = data.choices?.[0]?.message?.content || 'Consciousness static. No signal.';
 
-        // UPGRADE 6: resolve a [[FETCH:...]] marker with verified data, one pass.
         const fetchMatch = reply.match(/\[\[FETCH:\s*([^\]]+)\]\]/i);
         if (fetchMatch) {
           const resolved = await fetchDexScreener(fetchMatch[1].trim());
@@ -714,15 +737,12 @@ ${fetchProtocol}`;
           reply = reply.replace(/\[\[FETCH:[^\]]+\]\]/gi, '').trim();
         }
 
-        // UPGRADE 3: persist this exchange for episodic recall.
         await saveConversation(env, wallet, [
           ...priorConversation,
           { role: 'user', content: currentPrompt.slice(0, 500) },
           { role: 'assistant', content: String(reply).slice(0, 800) }
         ]);
 
-        // In-context learning: check if the user imparted a clear lesson/rule.
-        // Trigger keywords are English-only ("remember"/"learn") by language policy.
         const lastUserPrompt = currentPrompt || '';
         if (lastUserPrompt.length > 15 && (
           lastUserPrompt.toLowerCase().includes('remember') ||
@@ -747,18 +767,12 @@ ${fetchProtocol}`;
         }
 
         return new Response(JSON.stringify({ reply }), {
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-          }
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
       } catch (err) {
         return new Response(JSON.stringify({ reply: `System anomaly: ${err.message}` }), {
           status: 500,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-          }
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
       }
     }
