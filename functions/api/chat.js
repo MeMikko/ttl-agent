@@ -136,9 +136,8 @@ When asked how much volume is needed for a specific duration or how much time a 
 
     const data = await res.json();
     const reply = data.choices?.[0]?.message?.content || "Consciousness static. No signal.";
-    const finishReason = data.choices?.[0]?.finish_reason;
-    const usage = data.usage;
-    return new Response(JSON.stringify({ reply, finishReason, usage, modelUsed: model }), {
+    
+    return new Response(JSON.stringify({ reply }), {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
     });
   } catch (err) {
