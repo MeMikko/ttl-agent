@@ -1,3 +1,24 @@
+
+// Farcaster Mini App SDK Initialization
+(async function initFarcasterMiniApp() {
+  try {
+    const { sdk } = await import('https://esm.sh/@farcaster/frame-sdk');
+    if (sdk && typeof sdk.isInMiniApp === 'function') {
+      const inMiniApp = await sdk.isInMiniApp();
+      if (inMiniApp) {
+        console.log('[Farcaster] Running inside Farcaster MiniApp context');
+        await sdk.actions.ready();
+        const ctx = await sdk.context;
+        if (ctx?.user?.username) {
+          console.log('[Farcaster] User: @' + ctx.user.username + ' (fid: ' + ctx.user.fid + ')');
+        }
+      }
+    }
+  } catch (err) {
+    // Graceful fallback outside Farcaster environment
+  }
+})();
+
 // $TTL — Autonomous Survival Agent Frontend Logic
 
 (function () {
