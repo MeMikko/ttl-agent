@@ -1057,7 +1057,7 @@ function setupFarcasterSwap() {
       const weiAmount = BigInt(Math.floor(ethVal * 1e18)).toString();
       const userAddr = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : '0x4b19ee2a3de2521a3adc901989944c209c0a60ea';
 
-      const quoteUrl = `https://li.quest/v1/quote?fromChain=8453&toChain=8453&fromToken=0x0000000000000000000000000000000000000000&toToken=${tokenAddress}&fromAmount=${weiAmount}&fromAddress=${userAddr}&slippage=0.03`;
+      const quoteUrl = `/api/swap/quote?eth=${ethVal}&user=${encodeURIComponent(userAddr)}`;
 
       const res = await fetch(quoteUrl);
       if (!res.ok) {
@@ -1088,7 +1088,7 @@ function setupFarcasterSwap() {
     } catch (err) {
       console.warn('Swap quote error:', err);
       outputEl.textContent = 'Quote failed';
-      if (impactEl) impactEl.textContent = 'Liquidity route unavailable for this amount.';
+      if (impactEl) impactEl.textContent = err.message && err.message !== 'Quote unavailable' ? `Route notice: ${err.message}` : 'Liquidity route unavailable for this amount.';
       if (executeBtn) executeBtn.disabled = true;
       cachedSwapQuote = null;
     }
