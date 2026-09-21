@@ -5,7 +5,7 @@ export async function onRequestGet(context) {
   const isLaunched = String(env.IS_LAUNCHED || '').toLowerCase() === 'true' || env.IS_LAUNCHED === '1';
   const tokenAddress = env.TOKEN_ADDRESS || '';
   const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : null;
-  const initialHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 12;
+  const initialHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
 
   return new Response(JSON.stringify({
     isLaunched,
