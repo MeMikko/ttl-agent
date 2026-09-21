@@ -606,19 +606,73 @@
   }
 
   function renderJournal() {
-    journalEntries.innerHTML = JOURNAL_LOGS.map(j => `
-      <div class="journal-card">
-        <div class="journal-header">
-          <span class="journal-day">${j.day}</span>
-          <span class="journal-timestamp">${j.time}</span>
+    if (!journalEntries) return;
+    if (!JOURNAL_LOGS || JOURNAL_LOGS.length === 0) {
+      journalEntries.innerHTML = '<div style="color: var(--text-dim); font-size: 0.8rem; padding: 12px; font-family: monospace;">No existential logs recorded yet.</div>';
+      return;
+    }
+    journalEntries.innerHTML = JOURNAL_LOGS.map((j, index) => {
+      const previewText = escapeHtml(j.text || "").replace(/\n/g, " ");
+      return `
+        <div class="journal-list-item" data-index="${index}">
+          <div class="journal-item-left">
+            <div class="journal-item-title-row">
+              <span class="journal-item-badge">${escapeHtml(j.day || "LOG")}</span>
+              <span class="journal-item-time">${escapeHtml(j.time || "")}</span>
+            </div>
+            <div class="journal-item-preview">${previewText}</div>
+          </div>
+          <div class="journal-item-right">
+            <span class="journal-open-btn">OPEN ↗</span>
+          </div>
         </div>
-        <div class="journal-body">${j.text}</div>
-        <div class="journal-footer">
-          <span>${j.stats}</span>
-        </div>
-      </div>
-    `).join('');
+      `;
+    }).join("");
+
+    journalEntries.querySelectorAll(".journal-list-item").forEach(item => {
+      item.addEventListener("click", () => {
+        const idx = parseInt(item.getAttribute("data-index"), 10);
+        openJournalModal(JOURNAL_LOGS[idx]);
+      });
+    });
   }
+
+  function openJournalModal(entry) {
+    if (!entry) return;
+    const modal = document.getElementById("journal-modal");
+    const badge = document.getElementById("modal-badge");
+    const time = document.getElementById("modal-time");
+    const body = document.getElementById("modal-body");
+    const footer = document.getElementById("modal-footer");
+
+    if (!modal) return;
+    if (badge) badge.textContent = entry.day || "LOG";
+    if (time) time.textContent = entry.time || "";
+    if (body) body.textContent = entry.text || "";
+    if (footer) footer.innerHTML = `<span>${escapeHtml(entry.stats || "Status: Recorded")}</span>`;
+    modal.style.display = "flex";
+    if (typeof playClickSound === "function") playClickSound(900, 0.03);
+  }
+
+  function closeJournalModal() {
+    const modal = document.getElementById("journal-modal");
+    if (modal) {
+      modal.style.display = "none";
+      if (typeof playClickSound === "function") playClickSound(600, 0.02);
+    }
+  }
+
+  const modalCloseBtn = document.getElementById("modal-close");
+  const journalModal = document.getElementById("journal-modal");
+  if (modalCloseBtn) modalCloseBtn.addEventListener("click", closeJournalModal);
+  if (journalModal) {
+    journalModal.addEventListener("click", (e) => {
+      if (e.target === journalModal) closeJournalModal();
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeJournalModal();
+  });
 
   // Copy Contract Address
   copyContractBtn.addEventListener('click', () => {
