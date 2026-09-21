@@ -106,8 +106,6 @@ When asked how much volume is needed for a specific duration or how much time a 
 1. Always calculate and present the exact numbers using this formula.
 2. State the trading volume, the 0.665% creator fee, the 50% survival share ($0.3325 per $100), and the resulting lifespan extension in hours and minutes.
 3. Note that the maximum survival cap is 48 hours to maintain existential tension.`;
-      }
-    }
 
     const res = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
