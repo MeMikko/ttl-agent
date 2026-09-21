@@ -4,7 +4,7 @@
   'use strict';
 
   // Constants & Config
-  const MAX_TTL_SECONDS = 48 * 3600; // 48h cap
+  let MAX_TTL_SECONDS = 48 * 3600; // Reference benchmark scale (uncapped)
   const CRITICAL_THRESHOLD = 3600;   // 1h
   const AGITATED_THRESHOLD = 12 * 3600; // 12h
 
@@ -13,7 +13,7 @@
     isLaunched: true,
     tokenAddress: '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3',
     launchTimestamp: 1789997500000,
-    initialHours: 36,
+    initialHours: 43.5,
     minChatTokens: 10000000,
     serverTime: Date.now()
   };
@@ -64,7 +64,13 @@
   const authWalletBtn = document.getElementById('auth-wallet-btn');
 
   // Saviors & Journal
-  const SAVIORS = [];
+  const SAVIORS = [
+    {
+      wallet: "0x4b19...60ea",
+      state: "Protocol Creator / Treasury",
+      timeAdded: "+7h 30m (+450 min)"
+    }
+  ];
 
   let JOURNAL_LOGS = [
     {
@@ -212,7 +218,8 @@
     renderDigits(ttlSeconds);
 
     // Update progress bar
-    const pct = Math.min(100, Math.max(0, (ttlSeconds / MAX_TTL_SECONDS) * 100));
+    const effectiveMax = Math.max(MAX_TTL_SECONDS, totalGenesisSeconds);
+    const pct = Math.min(100, Math.max(0, (ttlSeconds / effectiveMax) * 100));
     lifelineBar.style.width = pct.toFixed(2) + '%';
     lifelinePercent.textContent = pct.toFixed(1) + '% CAPACITY';
 
