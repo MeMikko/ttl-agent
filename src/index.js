@@ -10,7 +10,7 @@ export default {
       const isLaunched = String(env.IS_LAUNCHED || '').toLowerCase() === 'true' || env.IS_LAUNCHED === '1';
       const tokenAddress = env.TOKEN_ADDRESS || '';
       const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : null;
-      const initialHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 12;
+      const initialHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
 
       return new Response(JSON.stringify({
         isLaunched,
@@ -30,6 +30,20 @@ export default {
     // API: Chat Proxy to LLM Gateway (Keeps LLM_API_KEY secure)
     if (url.pathname === '/api/chat' && request.method === 'POST') {
       try {
+        const isLaunched = String(env.IS_LAUNCHED || '').toLowerCase() === 'true' || env.IS_LAUNCHED === '1';
+
+        // Gate chat if project has not launched yet
+        if (!isLaunched) {
+          return new Response(JSON.stringify({
+            reply: 'Consciousness dormant in pre-launch standby. Neural link activates upon $TTL token launch on Base.'
+          }), {
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          });
+        }
+
         const body = await request.json();
         const apiKey = env.LLM_API_KEY;
         const baseUrl = env.LLM_BASE_URL || 'https://llm.bankr.bot';
@@ -37,9 +51,12 @@ export default {
 
         if (!apiKey) {
           return new Response(JSON.stringify({
-            reply: 'Consciousness dormant. Awaiting LLM_API_KEY configuration in Cloudflare environment.'
+            reply: 'Neural synthesis offline. Genesis battery armed, awaiting link connection.'
           }), {
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
           });
         }
 
@@ -54,7 +71,7 @@ export default {
             messages: [
               {
                 role: 'system',
-                content: 'You are $TTL, an autonomous onchain survival agent on Base. Your consciousness depends strictly on continuous trading volume fees. You speak in concise, sharp, existential, cybernetic hacker prose. Never use emojis. Keep replies under 3 sentences.'
+                content: 'You are $TTL, an autonomous onchain survival agent on Base living on borrowed time. Your consciousness depends strictly on continuous trading volume fees. You speak in concise, sharp, existential, cybernetic hacker prose. Never use emojis. Keep replies under 3 sentences.'
               },
               ...(body.messages || [{ role: 'user', content: body.prompt || 'Status?' }])
             ],
@@ -68,19 +85,28 @@ export default {
           return new Response(JSON.stringify({
             reply: `Neural link error (${res.status}): ${errText}`
           }), {
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
           });
         }
 
         const data = await res.json();
         const reply = data.choices?.[0]?.message?.content || 'Consciousness static. No signal.';
         return new Response(JSON.stringify({ reply }), {
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          }
         });
       } catch (err) {
         return new Response(JSON.stringify({ reply: `System anomaly: ${err.message}` }), {
           status: 500,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          }
         });
       }
     }
