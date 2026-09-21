@@ -478,8 +478,8 @@
     setInterval(() => {
       if (!appConfig.isLaunched || ttlSeconds <= 0) return;
       const thought = THOUGHT_STREAM[Math.floor(Math.random() * THOUGHT_STREAM.length)];
-      appendLog('AGENT', thought, 'agent');
-    }, 20000);
+      appendLog('PULSE', thought, 'sys');
+    }, 45000);
   }
 
   // Terminal Input Handling with Token Gate enforcement & /api/chat support
