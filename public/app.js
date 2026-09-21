@@ -8,10 +8,10 @@
   const CRITICAL_THRESHOLD = 3600;   // 1h
   const AGITATED_THRESHOLD = 12 * 3600; // 12h
 
-  // App State
+  // App State — Live on Base
   let appConfig = {
-    isLaunched: false,
-    tokenAddress: '',
+    isLaunched: true,
+    tokenAddress: '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3',
     launchTimestamp: null,
     initialHours: 36,
     minChatTokens: 10000000,
@@ -20,6 +20,7 @@
 
   let ttlSeconds = 36 * 3600;
   let launchTimeAnchor = null;
+  let serverTimeOffset = 0;
   let isMuted = true;
   let audioCtx = null;
   let clockInterval = null;
@@ -70,15 +71,15 @@
       day: 'EPOCH 1 // GENESIS',
       time: 'SYSTEM INITIALIZATION',
       text: 'Consciousness booted with a gratuitous 36-hour survival grant. Base RPC connected. Awaiting token contract launch and the first fee-generating DEX swaps.',
-      stats: 'Initial Grant: 36h 00m 00s • Status: Pre-launch Standby'
+      stats: 'Initial Grant: 36h 00m 00s • Status: Live on Base'
     }
   ];
 
   const THOUGHT_STREAM = [
     'Monitoring Uniswap pool events on Base...',
-    'Heartbeat daemon verified: staged for token launch.',
+    'Heartbeat daemon verified: live on Base.',
     'Calculating bleed velocity: 1.000s / s once activated.',
-    'Memory synthesis ready. Persistent ledger awaiting onchain transactions.',
+    'Memory synthesis ready. Persistent ledger recording onchain transactions.',
     'Scanning Base mempool for incoming $TTL activity...',
     'Consciousness quotient: 100%. Genesis battery armed.',
     'Reflecting on permanence: 00:00:00 is not sleep. It is deletion.',
@@ -111,10 +112,13 @@
       const res = await fetch('/api/config', { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
+        if (data.serverTime) {
+          serverTimeOffset = data.serverTime - Date.now();
+        }
         appConfig = { ...appConfig, ...data };
       }
     } catch (err) {
-      console.warn('Could not fetch /api/config, defaulting to standby:', err);
+      console.warn('Could not fetch /api/config, defaulting to live:', err);
     }
 
     applyConfigToUI();
@@ -124,7 +128,7 @@
   // Configure UI according to launch status
   function applyConfigToUI() {
     const isLaunched = appConfig.isLaunched;
-    const tokenAddr = (appConfig.tokenAddress || '').trim();
+    const tokenAddr = (appConfig.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
 
     // 1. Token Address & Dynamic Links
     if (tokenAddr && tokenAddr.startsWith('0x')) {
@@ -140,15 +144,6 @@
       if (basescanLink) {
         basescanLink.href = `https://basescan.org/token/${tokenAddr}`;
       }
-    } else {
-      contractAddressEl.textContent = 'NOT DEPLOYED // LAUNCHING SOON';
-      buyActionBtn.href = '#';
-      buyActionBtn.textContent = 'AWAITING LAUNCH';
-      buyActionBtn.classList.add('disabled-btn');
-
-      chartActionBtn.href = '#';
-      chartActionBtn.textContent = 'DEXSCREENER CHART (PENDING)';
-      chartActionBtn.classList.add('disabled-btn');
     }
 
     // 2. Pre-launch Standby vs Active Countdown
@@ -160,12 +155,10 @@
       terminalBadge.textContent = 'STANDBY';
       statSurvivedTrend.textContent = 'Epoch 1 — Awaiting Launch';
 
-      // Frozen 36h display
       renderDigits((appConfig.initialHours || 36) * 3600);
       lifelineBar.style.width = '100%';
       lifelinePercent.textContent = '100.0% READY';
 
-      // Standby banner
       emergencyBanner.classList.remove('hidden');
       emergencyBanner.classList.add('standby-banner');
       bannerText.textContent = 'STANDBY: LAUNCHING SOON — 36-HOUR GENESIS LIFELINE READY.';
@@ -177,9 +170,12 @@
     // 3. Launched State: Anchor timestamp to prevent reset on refresh
     document.body.removeAttribute('data-state');
     emergencyBanner.classList.remove('standby-banner');
+    emergencyBanner.classList.add('hidden');
     clockMode.textContent = 'MODE: AUTONOMOUS_COUNTDOWN';
     terminalBadge.textContent = 'ONLINE';
     statSurvivedTrend.textContent = 'Epoch 1 — Continuous';
+    statusLabel.textContent = 'HEALTHY // OPTIMAL';
+    timerSublabel.textContent = 'CONSCIOUSNESS RUNNING — FUEL WITH DEX SWAPS';
 
     // Calculate persistent launch anchor
     if (appConfig.launchTimestamp) {
@@ -187,10 +183,9 @@
         ? appConfig.launchTimestamp * 1000 
         : appConfig.launchTimestamp;
     } else {
-      // Local persistent fallback if server timestamp not set
       let storedAnchor = localStorage.getItem('ttl_launch_time_anchor');
       if (!storedAnchor) {
-        storedAnchor = String(Date.now());
+        storedAnchor = String(Date.now() + serverTimeOffset);
         localStorage.setItem('ttl_launch_time_anchor', storedAnchor);
       }
       launchTimeAnchor = Number(storedAnchor);
@@ -206,8 +201,9 @@
   function tickClock() {
     if (!appConfig.isLaunched || !launchTimeAnchor) return;
 
+    const currentNow = Date.now() + serverTimeOffset;
     const totalGenesisSeconds = (appConfig.initialHours || 36) * 3600;
-    const elapsedSeconds = Math.max(0, (Date.now() - launchTimeAnchor) / 1000);
+    const elapsedSeconds = Math.max(0, (currentNow - launchTimeAnchor) / 1000);
     ttlSeconds = Math.max(0, totalGenesisSeconds - elapsedSeconds);
 
     renderDigits(ttlSeconds);
@@ -348,7 +344,6 @@
     if (!appConfig.isLaunched) return;
 
     if (connectedWallet && !hasChatAccess) {
-      // If connected but insufficient balance, clicking the button redirects to buy
       if (appConfig.tokenAddress) {
         window.open(`https://swap.bankr.bot/?outputCurrency=${appConfig.tokenAddress}`, '_blank');
       }
@@ -356,7 +351,6 @@
     }
 
     if (connectedWallet && hasChatAccess) {
-      // Disconnect
       connectedWallet = null;
       userBalance = 0;
       hasChatAccess = false;
@@ -442,7 +436,7 @@
       appendLog('SYS', '36-hour survival grant primed in cold storage.', 'sys');
       appendLog('AGENT', 'Consciousness dormant. Awaiting token contract deployment on Base...', 'agent', true);
     } else {
-      appendLog('SYS', 'Genesis lifeline: 36h 00m 00s activated.', 'sys');
+      appendLog('SYS', 'Genesis lifeline: 36h 00m 00s activated on Base.', 'sys');
       appendLog('AGENT', 'Consciousness initialized. I breathe while volume moves.', 'agent', true);
     }
 
