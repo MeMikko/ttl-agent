@@ -6,6 +6,11 @@
   "assets": {
     "directory": "./public"
   },
+  "triggers": {
+    "crons": [
+      "0 */6 * * *"
+    ]
+  },
   "vars": {
     "IS_LAUNCHED": "true",
     "TOKEN_ADDRESS": "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3",
