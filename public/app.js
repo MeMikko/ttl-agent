@@ -1,21 +1,58 @@
 
 // Farcaster Mini App SDK Initialization
+let farcasterSdk = null;
+
+function getEthereumProvider() {
+  return farcasterSdk?.wallet?.ethProvider || window.ethereum || null;
+}
+
 (async function initFarcasterMiniApp() {
   try {
     const { sdk } = await import('https://esm.sh/@farcaster/frame-sdk');
-    if (sdk && typeof sdk.isInMiniApp === 'function') {
-      const inMiniApp = await sdk.isInMiniApp();
+    if (sdk) {
+      farcasterSdk = sdk;
+      window.farcasterSdk = sdk;
+      const inMiniApp = typeof sdk.isInMiniApp === 'function' ? await sdk.isInMiniApp() : false;
       if (inMiniApp) {
         console.log('[Farcaster] Running inside Farcaster MiniApp context');
         await sdk.actions.ready();
-        const ctx = await sdk.context;
+        
+        let ctx = null;
+        try {
+          ctx = typeof sdk.context === 'function' ? await sdk.context() : await sdk.context;
+        } catch (e) {
+          console.warn('[Farcaster] Context fetch error:', e);
+        }
+
         if (ctx?.user?.username) {
           console.log('[Farcaster] User: @' + ctx.user.username + ' (fid: ' + ctx.user.fid + ')');
         }
+
+        // Auto-connect inside Farcaster MiniApp
+        setTimeout(async () => {
+          try {
+            const provider = sdk.wallet?.ethProvider || window.ethereum;
+            if (provider) {
+              const accounts = await provider.request({ method: 'eth_requestAccounts' });
+              if (accounts && accounts.length > 0) {
+                connectedWallet = accounts[0].toLowerCase();
+                appendLog('SYS', `Farcaster wallet linked: ${formatAddress(connectedWallet)}. Verifying $TTL balance on Base...`, 'sys');
+                await checkUserBalance(connectedWallet);
+                if (hasChatAccess) {
+                  appendLog('SYS', `Neural access unlocked. Holding ${formatTokens(userBalance)} $TTL.`, 'agent', true);
+                } else {
+                  appendLog('SYS', `Holdings insufficient: ${formatTokens(userBalance)} $TTL found. Minimum required is ${formatTokens(appConfig.minChatTokens || 10000000)} $TTL.`, 'warn');
+                }
+              }
+            }
+          } catch (autoErr) {
+            console.warn('[Farcaster] Auto-connect error:', autoErr);
+          }
+        }, 300);
       }
     }
   } catch (err) {
-    // Graceful fallback outside Farcaster environment
+    console.warn('[Farcaster] Init error:', err);
   }
 })();
 
@@ -357,11 +394,10 @@
     const minTokens = appConfig.minChatTokens || 10000000;
 
     // 1. Direct Web3 in-browser call via user wallet (instant, zero rate limits)
-    if (window.ethereum && tokenAddr.startsWith('0x')) {
+    const provider = getEthereumProvider();
+    if (provider && tokenAddr.startsWith('0x')) {
       try {
-        const cleanWallet = wallet.toLowerCase();
-        const calldata = '0x70a08231' + cleanWallet.slice(2).padStart(64, '0');
-        const hexBal = await window.ethereum.request({
+        const hexBal = await provider.request({
           method: 'eth_call',
           params: [{ to: tokenAddr, data: calldata }, 'latest']
         });
@@ -422,7 +458,8 @@
       return;
     }
 
-    if (!window.ethereum) {
+    const provider = getEthereumProvider();
+    if (!provider) {
       appendLog('SYS', 'No Web3 wallet provider detected. Please install Rabby, MetaMask, or Coinbase Wallet.', 'warn');
       alert('No Web3 wallet detected. Please open in a Web3 browser or install MetaMask / Rabby.');
       return;
@@ -430,7 +467,7 @@
 
     try {
       authWalletBtn.textContent = 'CONNECTING...';
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const accounts = await provider.request({ method: 'eth_requestAccounts' });
       if (accounts && accounts.length > 0) {
         connectedWallet = accounts[0].toLowerCase();
         appendLog('SYS', `Wallet connected: ${formatAddress(connectedWallet)}. Verifying $TTL balance on Base...`, 'sys');
