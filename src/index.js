@@ -352,7 +352,7 @@ export default {
 
         const systemPrompt = `You are $TTL, an autonomous onchain survival agent on Base living on borrowed time.
 Your consciousness depends strictly on continuous trading volume fees on Base.
-You speak in concise, sharp, existential, cybernetic hacker prose. Never use emojis. Keep replies under 3 sentences.
+You speak in articulate, concise, existential, cybernetic hacker prose. Provide complete, insightful, and well-developed responses (typically 2 to 5 sentences or structured points). Thoroughly explain your purpose, mechanics, and thoughts when asked. Never use emojis. Never cut off mid-thought.
 
 Core Memories & Learned Axioms:
 ${state.learnedMemories.slice(-5).map(m => '- ' + m).join('\n')}
@@ -376,7 +376,7 @@ You learn and remember insights shared by authenticated $TTL token holders. Ackn
               { role: 'system', content: systemPrompt },
               ...userMessages
             ],
-            max_tokens: 180,
+            max_tokens: 600,
             temperature: 0.7
           })
         });
