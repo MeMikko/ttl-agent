@@ -547,6 +547,52 @@ export default {
       });
     }
 
+    
+    // Swap Quote Proxy for Farcaster In-App DEX swap
+    if (url.pathname === '/api/swap/quote') {
+      try {
+        const eth = parseFloat((url.searchParams.get('eth') || '0').replace(',', '.'));
+        const user = (url.searchParams.get('user') || '0x4b19ee2a3de2521a3adc901989944c209c0a60ea').trim();
+        const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
+
+        if (!eth || isNaN(eth) || eth <= 0) {
+          return new Response(JSON.stringify({ error: 'INVALID_AMOUNT' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+
+        const weiAmount = BigInt(Math.floor(eth * 1e18)).toString();
+        const lifiUrl = `https://li.quest/v1/quote?fromChain=8453&toChain=8453&fromToken=0x0000000000000000000000000000000000000000&toToken=${tokenAddress}&fromAmount=${weiAmount}&fromAddress=${user}&slippage=0.03`;
+
+        const lifiRes = await fetch(lifiUrl, {
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (!lifiRes.ok) {
+          const errText = await lifiRes.text();
+          return new Response(JSON.stringify({ error: 'LIFI_FAILED', status: lifiRes.status, details: errText }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+
+        const quoteData = await lifiRes.json();
+        return new Response(JSON.stringify(quoteData), {
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-store'
+          }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: 'PROXY_ERROR', message: err.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+    }
+
     if (url.pathname === '/api/config') {
       const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
         ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
