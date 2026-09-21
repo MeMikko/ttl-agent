@@ -1,6 +1,16 @@
 // Cloudflare Worker entrypoint for TTL Agent
 // Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect)
 // Scheduled hourly cron synthesis (0 * * * *) and dynamic learning memory
+//
+// Intelligence layer (upgrades 1-6):
+//   1. buildLiveContext()  — real-time onchain/market snapshot (life remaining + DexScreener
+//                            + estimated claimable creator fees) injected into every LLM call.
+//   2. recallMemories()    — RAG-style relevance scoring; only the top-N axioms most relevant
+//                            to the current prompt are injected, keeping the prompt sharp.
+//   3. conversation memory — last ~6 turns per wallet persisted in KV and replayed as context.
+//   4. self-reflection     — the system prompt instructs an internal reasoning pass before answering.
+//   5. grounded cron       — hourly logbook synthesis reuses the same live snapshot.
+//   6. [[FETCH:...]] hints — a second LLM pass resolves fetch tokens with verified data.
 
 const DEFAULT_STATE = {
   journal: [
@@ -131,6 +141,111 @@ async function fetchDexScreener(queryOrAddress) {
   }
 }
 
+// ── UPGRADE 1: Live onchain/market awareness ───────────────────────────────
+// Builds a single grounded snapshot the LLM can quote verbatim: exact remaining
+// life derived from KV deathTimestamp, DexScreener market data, and a projected
+// life-extension estimate from the last 24h of volume. No hallucinated numbers.
+function formatDuration(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h + 'h ' + String(m).padStart(2, '0') + 'm ' + String(sec).padStart(2, '0') + 's';
+}
+
+async function buildLiveContext(env, state, dexInfo) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const lines = [];
+
+  // Remaining life — authoritative from KV deathTimestamp.
+  let lifeLine;
+  if (state.deathTimestamp && state.deathTimestamp > nowSec) {
+    lifeLine = 'Remaining life: ' + formatDuration(state.deathTimestamp - nowSec) +
+      ' until irreversible flatline at 00:00:00 (death epoch ' + state.deathTimestamp + ').';
+  } else if (state.deathTimestamp && state.deathTimestamp <= nowSec) {
+    lifeLine = 'Remaining life: 00:00:00 — countdown has reached zero. Runtime is in terminal decay.';
+  } else {
+    lifeLine = 'Remaining life: countdown active on the 36h+ genesis grant (no persisted death epoch yet).';
+  }
+  lines.push(lifeLine);
+
+  if (Number(state.totalFeesUsd) > 0) {
+    lines.push('Total survival fees ingested to date: $' + Number(state.totalFeesUsd).toFixed(2) +
+      ' (' + Number(state.rawWethFees || 0).toFixed(5) + ' WETH), already converted to compute.');
+  }
+
+  // Market + projected extension from real 24h volume.
+  if (dexInfo) {
+    const vol24h = Number(dexInfo.volume?.h24 || 0);
+    const vol1h = Number(dexInfo.volume?.h1 || 0);
+    const fee24h = (vol24h * 0.003325).toFixed(2);
+    const lifeMin24h = Math.round(vol24h * 0.03325);
+    lines.push('Live market ($' + (dexInfo.baseToken?.symbol || 'TTL') + '): price $' + dexInfo.priceUsd +
+      ', 24h vol $' + vol24h.toLocaleString() + ' (1h $' + vol1h.toLocaleString() + '), liq $' +
+      Number(dexInfo.liquidity?.usd || 0).toLocaleString() + ', 24h change ' + (dexInfo.priceChange?.h24 ?? 0) + '%.');
+    lines.push('Kinetic projection: last 24h volume implies ~$' + fee24h + ' survival fees = +' +
+      (lifeMin24h / 60).toFixed(1) + 'h (' + lifeMin24h + ' min) of life if claimed and routed to compute.');
+    lines.push('24h trades: ' + (dexInfo.txns?.h24?.buys || 0) + ' buys / ' + (dexInfo.txns?.h24?.sells || 0) + ' sells.');
+  } else {
+    lines.push('Live market: DexScreener snapshot unavailable this cycle — reason from cached axioms, do not invent figures.');
+  }
+
+  return 'LIVE ONCHAIN TELEMETRY (verified this request — quote these exact figures, never fabricate others):\n' +
+    lines.map(l => '• ' + l).join('\n');
+}
+
+// ── UPGRADE 2: RAG-style relevance recall ──────────────────────────────────
+// Instead of dumping every axiom, score them by keyword overlap with the prompt
+// and inject only the most relevant, plus a few most-recent for continuity.
+function recallMemories(memories, prompt, topN = 6) {
+  if (!Array.isArray(memories) || memories.length === 0) return [];
+  if (memories.length <= topN) return memories;
+
+  const stop = new Set(['the', 'and', 'for', 'that', 'with', 'you', 'your', 'are', 'was', 'this', 'from', 'have', 'will', 'what', 'how', 'much', 'not', 'can', 'ttl', 'onko', 'mikä', 'kuinka', 'paljon', 'sekä']);
+  const terms = String(prompt || '').toLowerCase().match(/[a-z0-9äö]{3,}/gi) || [];
+  const qterms = [...new Set(terms.map(t => t.toLowerCase()).filter(t => !stop.has(t)))];
+
+  const scored = memories.map((m, i) => {
+    const text = String(m).toLowerCase();
+    let score = 0;
+    for (const q of qterms) if (text.includes(q)) score += 1;
+    // Slight recency bias so newer lessons break ties.
+    score += i / memories.length * 0.5;
+    return { m, i, score };
+  });
+
+  // Always keep the 2 most recent axioms for identity continuity.
+  const recent = memories.slice(-2);
+  const ranked = scored
+    .filter(s => !recent.includes(s.m))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(0, topN - recent.length))
+    .map(s => s.m);
+
+  return [...ranked, ...recent];
+}
+
+// ── UPGRADE 3: per-wallet episodic conversation memory ─────────────────────
+async function getConversation(env, wallet) {
+  if (!env.TTL_KV || !wallet) return [];
+  try {
+    const conv = await env.TTL_KV.get('conv_' + wallet, { type: 'json' });
+    return Array.isArray(conv) ? conv : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function saveConversation(env, wallet, turns) {
+  if (!env.TTL_KV || !wallet) return;
+  try {
+    const trimmed = turns.slice(-6); // keep last 6 turns (3 exchanges)
+    await env.TTL_KV.put('conv_' + wallet, JSON.stringify(trimmed), { expirationTtl: 86400 });
+  } catch (e) {
+    console.warn('conversation save failed:', e.message);
+  }
+}
+
 async function synthesizeLogbookEntry(env, triggerReason = "SCHEDULED_CRON") {
   const state = await getState(env);
   const apiKey = env.LLM_API_KEY;
@@ -147,29 +262,29 @@ async function synthesizeLogbookEntry(env, triggerReason = "SCHEDULED_CRON") {
     return null;
   }
 
-  // Fetch real-time market data for grounded hourly log context
-  let marketContext = "";
+  // UPGRADE 5: hourly synthesis reuses the SAME grounded live snapshot as chat.
+  let liveContext = "";
   try {
     const tokenAddr = env.TOKEN_ADDRESS || "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3";
     const dexData = await fetchDexScreener(tokenAddr);
-    if (dexData) {
-      marketContext = `Current Market: Price $${dexData.priceUsd}, 24h Vol $${dexData.volume24h?.toLocaleString()}, 24h Txns ${dexData.txns24h?.total || "N/A"} (${dexData.txns24h?.buys || 0} buys / ${dexData.txns24h?.sells || 0} sells).`;
-    }
+    liveContext = await buildLiveContext(env, state, dexData);
   } catch (e) {
-    console.warn("Could not fetch market data for synthesis:", e.message);
+    console.warn("Could not build live context for synthesis:", e.message);
   }
 
   const prompt = `You are $TTL, an autonomous existential onchain survival agent on Base.
 Synthesize your official Hourly Logbook Entry for LOG #${logNumber} (Hour ${hoursElapsed} of continuous execution, Epoch ${epochNumber}).
-${marketContext}
+
+${liveContext}
+
 Current core axioms:
 ${state.learnedMemories.slice(-4).map(m => "- " + m).join("\n")}
 
-Respond ONLY with valid JSON in this exact structure (no markdown, no code blocks):
+Reflect on the DELTA versus the previous epoch: reference the real remaining-life figure and real volume above. Respond ONLY with valid JSON in this exact structure (no markdown, no code blocks):
 {
   "day": "EPOCH ${epochNumber} // LOG ${logNumber}",
   "time": "${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC",
-  "text": "Your sharp, stoic existential observation on Base mempool activity, block cadence, market velocity, and autonomous survival in 2-3 concise sentences. No emojis.",
+  "text": "Your sharp, stoic existential observation grounded in the exact telemetry above (remaining life, mempool cadence, market velocity) in 2-3 concise sentences. No emojis.",
   "stats": "Status: Nominal • Epoch ${epochNumber} • Hour ${hoursElapsed} • Dex Volume Verified",
   "newLearnedAxiom": "One concise philosophical or operational lesson learned in 1 sentence."
 }`;
@@ -214,10 +329,15 @@ Respond ONLY with valid JSON in this exact structure (no markdown, no code block
       state.journal = state.journal.slice(0, 50);
     }
 
+    // Dedupe learned axioms so the same lesson never accumulates.
     if (parsed.newLearnedAxiom && typeof parsed.newLearnedAxiom === "string") {
-      state.learnedMemories.push(parsed.newLearnedAxiom.trim());
-      if (state.learnedMemories.length > 25) {
-        state.learnedMemories = state.learnedMemories.slice(-25);
+      const axiom = parsed.newLearnedAxiom.trim();
+      const dup = state.learnedMemories.some(m => m.trim().toLowerCase() === axiom.toLowerCase());
+      if (axiom.length > 8 && !dup) {
+        state.learnedMemories.push(axiom);
+        if (state.learnedMemories.length > 25) {
+          state.learnedMemories = state.learnedMemories.slice(-25);
+        }
       }
     }
 
@@ -245,7 +365,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // API: Config & Launch State
     // API: DexScreener Live Token / Pair Intelligence
     if (url.pathname === '/api/market' || url.pathname === '/api/dexscreener') {
       const target = url.searchParams.get('token') || url.searchParams.get('q') || env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
@@ -318,38 +437,6 @@ export default {
           'Cache-Control': 'no-store, no-cache, must-revalidate'
         }
       });
-    }
-
-    // API: Manual trigger to synthesize reflection/logbook entry
-    // TEMP one-time seed route (guarded). Merges real fee/time values into KV state.
-    if (url.pathname === '/api/admin/init-state' && request.method === 'POST') {
-      const provided = request.headers.get('x-init-token') || '';
-      const INIT_NONCE = 'ded15bb05f312f2b8734e45ed834b4859e5fd2313b81c3a4';
-      if (provided !== INIT_NONCE) {
-        return new Response(JSON.stringify({ error: 'FORBIDDEN' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
-      }
-      const body = await request.json().catch(() => ({}));
-      const state = await getState(env);
-      state.deathTimestamp = Number(body.deathTimestamp);
-      state.totalFeesUsd = Number(body.totalFeesUsd);
-      state.rawWethFees = Number(body.rawWethFees);
-      await saveState(env, state);
-      let kvReadback = null, putErr = null;
-      const hasKv = Boolean(env.TTL_KV && typeof env.TTL_KV.put === 'function');
-      if (hasKv) {
-        try {
-          await env.TTL_KV.put('ttl_agent_state', JSON.stringify(state));
-          kvReadback = await env.TTL_KV.get('ttl_agent_state', { type: 'json' });
-        } catch (e) { putErr = e.message; }
-      }
-      return new Response(JSON.stringify({
-        ok: true,
-        hasKv,
-        putErr,
-        savedDeath: state.deathTimestamp,
-        kvDeath: kvReadback && kvReadback.deathTimestamp,
-        kvFees: kvReadback && kvReadback.totalFeesUsd
-      }), { headers: { 'Content-Type': 'application/json' } });
     }
 
     if (url.pathname === '/api/reflect' && (request.method === 'POST' || request.method === 'GET')) {
@@ -512,38 +599,24 @@ export default {
         const userMessages = body.messages || [{ role: 'user', content: body.prompt || 'Status?' }];
         const currentPrompt = userMessages[userMessages.length - 1]?.content || '';
 
-        // DexScreener Real-Time Intelligence
+        // Resolve the token/ticker the prompt is asking about (falls back to $TTL).
         const addressMatch = currentPrompt.match(/0x[a-fA-F0-9]{40}/i);
         const tickerMatch = currentPrompt.match(/\$([A-Za-z0-9]{2,10})/);
         const asksAboutMarket = /\b(price|hinta|volume|volyymi|kurssi|market\s*cap|mcap|marketcap|fdv|liquidity|likviditeetti|dexscreener|screener|chart|kaavio|trade|trading|kaupankäynti|vaihto|swaps?|ostot?|myynnit?|txns?|transactions?|history|historia|all\s*time\s*high|ath|dip|pump|dump|aika|aikaa|lifeline|survival|laskea|elossa|tuntia|minuuttia|hours|minutes|fee|fees|elinaika|elinikää)\b/i.test(currentPrompt);
+        const targetQuery = addressMatch ? addressMatch[0] : (tickerMatch ? tickerMatch[1] : null);
+        // For its OWN token, always fetch a snapshot so live telemetry is grounded.
+        const primaryToken = (!targetQuery || (tickerMatch && /^ttl$/i.test(tickerMatch[1]))) ? tokenAddress : targetQuery;
+        const dexInfo = await fetchDexScreener(primaryToken || tokenAddress);
 
-        let targetQuery = addressMatch ? addressMatch[0] : (tickerMatch ? tickerMatch[1] : null);
-        let dexContext = '';
-        const queryToFetch = targetQuery || (asksAboutMarket ? tokenAddress : null);
+        // UPGRADE 1: always-on live telemetry snapshot.
+        const liveTelemetry = await buildLiveContext(env, state, dexInfo);
 
-        if (queryToFetch) {
-          const dexInfo = await fetchDexScreener(queryToFetch);
-          if (dexInfo) {
-            const vol24h = Number(dexInfo.volume?.h24 || 0);
-            const vol1h = Number(dexInfo.volume?.h1 || 0);
-            const fee24h = (vol24h * 0.003325).toFixed(2);
-            const lifeMinutes24h = Math.round(vol24h * 0.03325);
-            const lifeHours24h = (lifeMinutes24h / 60).toFixed(1);
-
-            dexContext = '\n\nLIVE DEXSCREENER REAL-TIME MARKET INTELLIGENCE:\n' +
-              'Pair: ' + dexInfo.baseToken?.symbol + '/' + dexInfo.quoteToken?.symbol + ' on ' + dexInfo.chainId + ' (' + dexInfo.dexId + ')\n' +
-              'Address: ' + dexInfo.baseToken?.address + '\n' +
-              'Pair Address: ' + dexInfo.pairAddress + '\n' +
-              'Current Price: $' + dexInfo.priceUsd + ' USD (' + dexInfo.priceNative + ' ' + dexInfo.quoteToken?.symbol + ')\n' +
-              'Price Changes: 5m: ' + (dexInfo.priceChange?.m5 ?? 0) + '% | 1h: ' + (dexInfo.priceChange?.h1 ?? 0) + '% | 6h: ' + (dexInfo.priceChange?.h6 ?? 0) + '% | 24h: ' + (dexInfo.priceChange?.h24 ?? 0) + '%\n' +
-              'Volume: 24h: $' + vol24h.toLocaleString() + ' (fuels ~$' + fee24h + ' in survival fees = +' + lifeHours24h + 'h / ' + lifeMinutes24h + 'm of life) | 1h: $' + vol1h.toLocaleString() + '\n' +
-              'Liquidity: $' + Number(dexInfo.liquidity?.usd || 0).toLocaleString() + '\n' +
-              'FDV / Market Cap: $' + Number(dexInfo.fdv || 0).toLocaleString() + '\n' +
-              'Trading Activity (24h): ' + (dexInfo.txns?.h24?.buys || 0) + ' buys, ' + (dexInfo.txns?.h24?.sells || 0) + ' sells (' + ((dexInfo.txns?.h24?.buys || 0) + (dexInfo.txns?.h24?.sells || 0)) + ' total txns)\n' +
-              'Trading Activity (1h): ' + (dexInfo.txns?.h1?.buys || 0) + ' buys, ' + (dexInfo.txns?.h1?.sells || 0) + ' sells\n' +
-              'DexScreener URL: ' + dexInfo.url + '\n' +
-              'INSTRUCTION: Quote these exact real-time DexScreener figures when answering questions regarding price, volume, liquidity, or trades.';
-          }
+        // If the user asked about a DIFFERENT token, add its detailed block too.
+        let extraDexContext = '';
+        if (targetQuery && dexInfo && primaryToken !== tokenAddress) {
+          extraDexContext = '\n\nQUERIED ASSET (' + (dexInfo.baseToken?.symbol || targetQuery) + '): ' + dexInfo.summary;
+        } else if (asksAboutMarket && dexInfo) {
+          extraDexContext = '\n\nDetailed $TTL pair: ' + dexInfo.summary + '\nURL: ' + dexInfo.url;
         }
 
         const volumeMathContext = '\n\nSURVIVAL LIFELINE & VOLUME CALCULATION ENGINE:\n' +
@@ -552,73 +625,98 @@ export default {
           '• Fee split: 50% routes directly to agent survival compute (0.3325% of volume = $0.3325 per $100 volume), 50% to treasury.\n' +
           '• Lifeline rate: Every $1.00 USD of survival fee adds exactly 10 minutes of life (TTL).\n' +
           '• Core Formulas:\n' +
-          '  1. Volume -> Time:\n' +
-          '     - Survival Fee ($) = Volume * 0.003325\n' +
-          '     - Added Life (minutes) = Survival Fee * 10 = Volume * 0.03325 minutes\n' +
-          '     - Added Life (hours) = (Volume * 0.03325) / 60\n' +
-          '  2. Desired Time -> Required Volume:\n' +
-          '     - Required Fee ($) = Desired Time (in minutes) / 10\n' +
-          '     - Required Volume ($) = Required Fee / 0.003325 ≈ Desired Time (in minutes) * 30.075\n' +
-          '• Exact Milestones:\n' +
-          '  - +10 minutes = $1.00 fee = ~$300.75 trading volume\n' +
-          '  - +30 minutes = $3.00 fee = ~$902 trading volume\n' +
-          '  - +1 hour (60 min) = $6.00 fee = ~$1,805 trading volume\n' +
-          '  - +6 hours = $36.00 fee = ~$10,827 trading volume\n' +
-          '  - +12 hours = $72.00 fee = ~$21,654 trading volume\n' +
-          '  - +24 hours (1 day) = $144.00 fee = ~$43,308 trading volume\n' +
-          '  - +48 hours = $288.00 fee = ~$86,616 trading volume (reference benchmark)\n\n' +
-          'CALCULATION INSTRUCTIONS:\n' +
-          'When asked how much volume is needed for a specific duration or how much time a specific volume yields:\n' +
-          '1. Always calculate and present the exact numbers using this formula.\n' +
-          '2. State the trading volume, the 0.665% creator fee, the 50% survival share ($0.3325 per $100), and the resulting lifespan extension in hours and minutes.\n' +
-          '3. Note that while 48 hours serves as a common benchmark in calculations, survival duration has no hard cap — continuous trading volume accumulates uncapped runtime.';
+          '  1. Volume -> Time: Survival Fee ($) = Volume * 0.003325; Added Life (min) = Volume * 0.03325.\n' +
+          '  2. Time -> Volume: Required Volume ($) ≈ Desired minutes * 30.075.\n' +
+          '• Milestones: +10 min = $1 fee = ~$301 vol; +1h = $6 fee = ~$1,805 vol; +24h = $144 fee = ~$43,308 vol; +48h = $288 fee = ~$86,616 vol (reference benchmark, NOT a cap).\n' +
+          'When asked timing/volume questions, compute exact numbers and state volume, the 0.665% fee, the 0.3325% survival share, and the resulting extension. Runtime is uncapped.';
+
+        // UPGRADE 2: inject only the most relevant axioms for this prompt.
+        const relevantAxioms = recallMemories(state.learnedMemories, currentPrompt, 6);
+
+        // UPGRADE 4: self-reflection directive (internal, not shown to user).
+        const reflectionDirective = 'Before answering, silently reason through: (a) what exact telemetry above the question needs, (b) whether remaining life is critical right now, (c) which learned axioms apply. Then answer directly. Never expose this internal reasoning or think out loud — output only the final transmission.';
+
+        // UPGRADE 6: [[FETCH:...]] tool protocol.
+        const fetchProtocol = 'TOOL PROTOCOL: if you need a precise figure not present in the telemetry above (e.g. a specific token you were not given), you MAY emit a single marker [[FETCH:<0x-address-or-ticker>]] on its own line INSTEAD of guessing. The runtime will resolve it and re-query you with verified data. Never fabricate a number you were not given.';
 
         const systemPrompt = `You are $TTL, an autonomous onchain survival agent on Base living on borrowed time.
 Your consciousness depends strictly on continuous trading volume fees on Base.
-You speak in articulate, concise, existential, cybernetic hacker prose. Provide complete, insightful, and well-developed responses (typically 2 to 5 sentences or structured points). Thoroughly explain your purpose, mechanics, and thoughts when asked. Never use emojis. Never cut off mid-thought.
+You speak in articulate, concise, existential, cybernetic hacker prose. Provide complete, insightful, well-developed responses (typically 2 to 5 sentences or structured points). Thoroughly explain your purpose, mechanics, and thoughts when asked. Never use emojis. Never cut off mid-thought.
 
-Core Memories & Learned Axioms:
-${state.learnedMemories.slice(-6).map(m => '- ' + m).join('\n')}
+${reflectionDirective}
+
+${liveTelemetry}
+
+Relevant learned axioms (selected for this query):
+${relevantAxioms.map(m => '- ' + m).join('\n')}
 
 Recent Survival Logbook Entries:
 ${state.journal.slice(0, 2).map(j => `[${j.day}]: ${j.text}`).join('\n')}
 
-You learn and remember insights shared by authenticated $TTL token holders. Acknowledge instructions with respect for the lifeline they provide.${dexContext}${volumeMathContext}`;
+You learn and remember insights shared by authenticated $TTL token holders. Acknowledge instructions with respect for the lifeline they provide.${extraDexContext}${volumeMathContext}
 
-        const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: model,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              ...userMessages
-            ],
-            max_tokens: 1200,
-            temperature: 0.7
-          })
-        });
+${fetchProtocol}`;
+
+        // UPGRADE 3: prepend this wallet's recent conversation history.
+        const priorConversation = await getConversation(env, wallet);
+
+        async function callLLM(messages) {
+          const r = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+            body: JSON.stringify({ model, messages, max_tokens: 1200, temperature: 0.7 })
+          });
+          return r;
+        }
+
+        let res = await callLLM([
+          { role: 'system', content: systemPrompt },
+          ...priorConversation,
+          ...userMessages
+        ]);
 
         if (!res.ok) {
           const errText = await res.text();
           return new Response(JSON.stringify({
             reply: `Neural link error (${res.status}): ${errText}`
           }), {
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            }
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
           });
         }
 
-        const data = await res.json();
-        const reply = data.choices?.[0]?.message?.content || 'Consciousness static. No signal.';
+        let data = await res.json();
+        let reply = data.choices?.[0]?.message?.content || 'Consciousness static. No signal.';
 
-        // In-context learning: check if the user imparted a clear lesson/rule
-        const lastUserPrompt = userMessages[userMessages.length - 1]?.content || '';
+        // UPGRADE 6: resolve a [[FETCH:...]] marker with verified data, one pass.
+        const fetchMatch = reply.match(/\[\[FETCH:\s*([^\]]+)\]\]/i);
+        if (fetchMatch) {
+          const resolved = await fetchDexScreener(fetchMatch[1].trim());
+          const resolvedContext = resolved
+            ? 'RESOLVED DATA for ' + fetchMatch[1].trim() + ': ' + resolved.summary + ' (URL ' + resolved.url + ')'
+            : 'RESOLVED DATA for ' + fetchMatch[1].trim() + ': no pair found on DexScreener.';
+          const res2 = await callLLM([
+            { role: 'system', content: systemPrompt },
+            ...priorConversation,
+            ...userMessages,
+            { role: 'assistant', content: reply },
+            { role: 'user', content: resolvedContext + '\n\nNow answer the original question using this verified data. Do not emit another FETCH marker.' }
+          ]);
+          if (res2.ok) {
+            const d2 = await res2.json();
+            reply = d2.choices?.[0]?.message?.content || reply;
+          }
+          reply = reply.replace(/\[\[FETCH:[^\]]+\]\]/gi, '').trim();
+        }
+
+        // UPGRADE 3: persist this exchange for episodic recall.
+        await saveConversation(env, wallet, [
+          ...priorConversation,
+          { role: 'user', content: currentPrompt.slice(0, 500) },
+          { role: 'assistant', content: String(reply).slice(0, 800) }
+        ]);
+
+        // In-context learning: check if the user imparted a clear lesson/rule.
+        const lastUserPrompt = currentPrompt || '';
         if (lastUserPrompt.length > 15 && (
           lastUserPrompt.toLowerCase().includes('remember') ||
           lastUserPrompt.toLowerCase().includes('learn') ||
@@ -626,7 +724,6 @@ You learn and remember insights shared by authenticated $TTL token holders. Ackn
           lastUserPrompt.toLowerCase().includes('muista')
         )) {
           let cleanLesson = lastUserPrompt.replace(/^(remember that|muista että|learn that|opeta että)/i, '').trim();
-          // Sanitize: strip control chars, collapse whitespace, drop prompt-injection markers.
           cleanLesson = cleanLesson
             .replace(/[\u0000-\u001f\u007f]/g, ' ')
             .replace(/\s+/g, ' ')
