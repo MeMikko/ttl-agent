@@ -1164,18 +1164,23 @@ function setupFarcasterSwap() {
           const bundleId = (callResult && typeof callResult === 'object') ? (callResult.id || callResult.bundleId) : callResult;
           console.log('wallet_sendCalls bundle:', bundleId);
 
-          // Try to resolve the actual tx hash from the bundle status
-          try {
-            const status = await provider.request({
-              method: 'wallet_getCallsStatus',
-              params: [bundleId]
-            });
-            const receipts = status && (status.receipts || (status.calls && status.calls));
-            if (receipts && receipts[0] && receipts[0].transactionHash) {
-              txHash = receipts[0].transactionHash;
+          // Poll bundle status a few times; user has already confirmed by now
+          for (let i = 0; i < 8 && !txHash; i++) {
+            try {
+              const status = await provider.request({
+                method: 'wallet_getCallsStatus',
+                params: [bundleId]
+              });
+              const receipts = status && (status.receipts || (status.calls && status.calls));
+              if (receipts && receipts[0] && receipts[0].transactionHash) {
+                txHash = receipts[0].transactionHash;
+                break;
+              }
+            } catch (statusErr) {
+              console.warn('wallet_getCallsStatus not available:', statusErr && statusErr.message);
+              break; // method unsupported — stop polling
             }
-          } catch (statusErr) {
-            console.warn('wallet_getCallsStatus not available:', statusErr && statusErr.message);
+            await new Promise(r => setTimeout(r, 1500));
           }
           if (!txHash) txHash = bundleId; // fall back to showing the bundle id
         } catch (sendCallsErr) {
