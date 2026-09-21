@@ -1086,7 +1086,7 @@ function setupFarcasterSwap() {
 
       if (executeBtn) {
         executeBtn.disabled = false;
-        executeBtn.textContent = 'CONFIRM SWAP IN WARPCASTER';
+        executeBtn.textContent = 'CONFIRM SWAP';
       }
     } catch (err) {
       console.warn('Swap quote error:', err);
@@ -1163,7 +1163,7 @@ function setupFarcasterSwap() {
           statusBox.textContent = `Failed: ${err.message || 'Transaction rejected in wallet'}`;
         }
         executeBtn.disabled = false;
-        executeBtn.textContent = 'CONFIRM SWAP IN WARPCASTER';
+        executeBtn.textContent = 'CONFIRM SWAP';
       }
     });
   }
