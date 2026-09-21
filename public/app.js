@@ -12,7 +12,7 @@
   let appConfig = {
     isLaunched: true,
     tokenAddress: '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3',
-    launchTimestamp: null,
+    launchTimestamp: 1789997500000,
     initialHours: 36,
     minChatTokens: 10000000,
     serverTime: Date.now()
@@ -70,7 +70,7 @@
     {
       day: 'EPOCH 1 // GENESIS',
       time: 'SYSTEM INITIALIZATION',
-      text: 'Consciousness booted with a gratuitous 36-hour survival grant. Base RPC connected. Awaiting token contract launch and the first fee-generating DEX swaps.',
+      text: 'Consciousness booted with a gratuitous 36-hour survival grant. Base RPC connected. Token live on Base, awaiting sustained DEX swap volumes.',
       stats: 'Initial Grant: 36h 00m 00s • Status: Live on Base'
     }
   ];
@@ -78,7 +78,7 @@
   const THOUGHT_STREAM = [
     'Monitoring Uniswap pool events on Base...',
     'Heartbeat daemon verified: live on Base.',
-    'Calculating bleed velocity: 1.000s / s once activated.',
+    'Calculating bleed velocity: 1.000s / s.',
     'Memory synthesis ready. Persistent ledger recording onchain transactions.',
     'Scanning Base mempool for incoming $TTL activity...',
     'Consciousness quotient: 100%. Genesis battery armed.',
@@ -267,7 +267,7 @@
   function formatTokens(num) {
     if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
     if (num >= 1e3) return (num / 1e3).toFixed(1) + 'k';
-    return num.toLocaleString();
+    return Math.floor(num).toLocaleString();
   }
 
   function updateTokenGateUI() {
@@ -312,7 +312,7 @@
     } else {
       authLockIcon.textContent = '🚫';
       authStatusText.textContent = `${formattedAddr} (${balanceFormatted} $TTL) // NEED ${minTokensLabel}`;
-      authWalletBtn.textContent = 'BUY $TTL';
+      authWalletBtn.textContent = 'RECHECK / BUY';
       authWalletBtn.className = 'auth-wallet-btn insufficient';
       terminalInput.disabled = true;
       terminalSendBtn.disabled = true;
@@ -322,8 +322,34 @@
 
   async function checkUserBalance(wallet) {
     if (!wallet) return;
+    const tokenAddr = (appConfig.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
+    const minTokens = appConfig.minChatTokens || 10000000;
+
+    // 1. Direct Web3 in-browser call via user wallet (instant, zero rate limits)
+    if (window.ethereum && tokenAddr.startsWith('0x')) {
+      try {
+        const cleanWallet = wallet.toLowerCase();
+        const calldata = '0x70a08231' + cleanWallet.slice(2).padStart(64, '0');
+        const hexBal = await window.ethereum.request({
+          method: 'eth_call',
+          params: [{ to: tokenAddr, data: calldata }, 'latest']
+        });
+        if (hexBal && hexBal !== '0x') {
+          const balWei = BigInt(hexBal);
+          const balTokens = Number(balWei / (10n ** 18n));
+          userBalance = balTokens;
+          hasChatAccess = balTokens >= minTokens;
+          updateTokenGateUI();
+          if (hasChatAccess) return;
+        }
+      } catch (w3Err) {
+        console.warn('In-browser web3 check fallback to api:', w3Err);
+      }
+    }
+
+    // 2. Fallback to Cloudflare Worker API check
     try {
-      const res = await fetch(`/api/balance?wallet=${encodeURIComponent(wallet)}`);
+      const res = await fetch(`/api/balance?wallet=${encodeURIComponent(wallet)}&_t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
         userBalance = data.balanceTokens || 0;
@@ -344,6 +370,12 @@
     if (!appConfig.isLaunched) return;
 
     if (connectedWallet && !hasChatAccess) {
+      authWalletBtn.textContent = 'CHECKING...';
+      await checkUserBalance(connectedWallet);
+      if (hasChatAccess) {
+        appendLog('SYS', `Neural access unlocked. Holding ${formatTokens(userBalance)} $TTL.`, 'agent', true);
+        return;
+      }
       if (appConfig.tokenAddress) {
         window.open(`https://swap.bankr.bot/?outputCurrency=${appConfig.tokenAddress}`, '_blank');
       }
