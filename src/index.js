@@ -548,7 +548,7 @@ export default {
     }
 
     
-    // Swap Quote Proxy for Farcaster In-App DEX swap
+    // Swap Quote Proxy for Farcaster In-App DEX swap (KyberSwap primary, LiFi fallback)
     if (url.pathname === '/api/swap/quote') {
       try {
         const eth = parseFloat((url.searchParams.get('eth') || '0').replace(',', '.'));
@@ -563,27 +563,68 @@ export default {
         }
 
         const weiAmount = BigInt(Math.floor(eth * 1e18)).toString();
+
+        // 1. Primary: KyberSwap Aggregator (fast, open Base API, no strict 429 rate limit)
+        try {
+          const kyberRouteRes = await fetch(`https://aggregator-api.kyberswap.com/base/api/v1/routes?tokenIn=0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE&tokenOut=${tokenAddress}&amountIn=${weiAmount}`, {
+            headers: { 'Accept': 'application/json', 'x-client-id': 'ttl-terminal' }
+          });
+          if (kyberRouteRes.ok) {
+            const rData = await kyberRouteRes.json();
+            if (rData.code === 0 && rData.data?.routeSummary) {
+              const buildRes = await fetch('https://aggregator-api.kyberswap.com/base/api/v1/route/build', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-client-id': 'ttl-terminal' },
+                body: JSON.stringify({
+                  routeSummary: rData.data.routeSummary,
+                  sender: user,
+                  recipient: user,
+                  slippageTolerance: 100 // 1%
+                })
+              });
+              if (buildRes.ok) {
+                const bData = await buildRes.json();
+                if (bData.code === 0 && bData.data?.data) {
+                  return new Response(JSON.stringify({
+                    estimate: {
+                      toAmount: bData.data.amountOut,
+                      toAmountMin: bData.data.amountOut
+                    },
+                    transactionRequest: {
+                      to: bData.data.routerAddress,
+                      data: bData.data.data,
+                      value: '0x' + BigInt(bData.data.amountIn || weiAmount).toString(16),
+                      gasLimit: '0x100000',
+                      from: user
+                    }
+                  }), {
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': '*',
+                      'Cache-Control': 'no-store'
+                    }
+                  });
+                }
+              }
+            }
+          }
+        } catch (kErr) {
+          console.warn('KyberSwap quote failed:', kErr.message);
+        }
+
+        // 2. Fallback: Li.Fi
         const lifiUrl = `https://li.quest/v1/quote?fromChain=8453&toChain=8453&fromToken=0x0000000000000000000000000000000000000000&toToken=${tokenAddress}&fromAmount=${weiAmount}&fromAddress=${user}&slippage=0.03`;
-
-        const lifiRes = await fetch(lifiUrl, {
-          headers: { 'Accept': 'application/json' }
-        });
-
-        if (!lifiRes.ok) {
-          const errText = await lifiRes.text();
-          return new Response(JSON.stringify({ error: 'LIFI_FAILED', status: lifiRes.status, details: errText }), {
-            status: 502,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        const lifiRes = await fetch(lifiUrl, { headers: { 'Accept': 'application/json' } });
+        if (lifiRes.ok) {
+          const quoteData = await lifiRes.json();
+          return new Response(JSON.stringify(quoteData), {
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }
           });
         }
 
-        const quoteData = await lifiRes.json();
-        return new Response(JSON.stringify(quoteData), {
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-            'Cache-Control': 'no-store'
-          }
+        return new Response(JSON.stringify({ error: 'ALL_ROUTES_UNAVAILABLE' }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
       } catch (err) {
         return new Response(JSON.stringify({ error: 'PROXY_ERROR', message: err.message }), {
