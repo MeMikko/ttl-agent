@@ -285,5 +285,65 @@
 
   
 
+
+  <!-- Farcaster In-App Swap Modal (Only triggered inside Farcaster) -->
+  <div id="fc-swap-modal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-box">
+          <span class="modal-tag">BASE L2 // IN-FRAME SWAP</span>
+          <h3 class="modal-title">⚡ FUEL AGENT // SWAP $TTL</h3>
+        </div>
+        <button id="close-swap-modal-btn" class="modal-close-btn" type="button">&times;</button>
+      </div>
+      
+      <div class="modal-body">
+        <div class="swap-field-group">
+          <div class="field-label-row">
+            <span class="field-label">YOU PAY</span>
+            <span class="field-balance" id="swap-eth-balance">Network: Base</span>
+          </div>
+          <div class="input-with-badge">
+            <input type="number" id="swap-eth-amount" step="0.001" min="0.0005" value="0.005" placeholder="0.005" />
+            <span class="currency-badge">ETH</span>
+          </div>
+          <div class="preset-btn-row">
+            <button type="button" class="preset-pill" data-amount="0.002">0.002</button>
+            <button type="button" class="preset-pill active" data-amount="0.005">0.005</button>
+            <button type="button" class="preset-pill" data-amount="0.01">0.01</button>
+            <button type="button" class="preset-pill" data-amount="0.02">0.02</button>
+          </div>
+        </div>
+
+        <div class="swap-arrow-divider">
+          <span class="swap-arrow-icon">↓</span>
+        </div>
+
+        <div class="swap-field-group">
+          <div class="field-label-row">
+            <span class="field-label">YOU RECEIVE</span>
+            <span class="field-sub" id="swap-route-tag">Uniswap v4 on Base</span>
+          </div>
+          <div class="output-preview-box">
+            <span id="swap-ttl-output" class="output-val">Fetching quote...</span>
+            <span class="currency-badge">$TTL</span>
+          </div>
+          <div class="fuel-impact-preview" id="fuel-impact-preview">
+            Calculating impact on consciousness...
+          </div>
+        </div>
+
+        <div id="swap-status-box" class="swap-status-box hidden"></div>
+
+        <button type="button" id="execute-fc-swap-btn" class="primary-swap-btn">
+          CONFIRM SWAP IN WARPCASTER
+        </button>
+        <button type="button" id="cancel-swap-btn" class="cancel-swap-btn">
+          CANCEL
+        </button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
