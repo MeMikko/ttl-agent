@@ -30,11 +30,15 @@ async function getEthereumProvider() {
   if (farcasterSdk?.wallet) {
     try {
       if (typeof farcasterSdk.wallet.getEthereumProvider === 'function') {
-        const p = await farcasterSdk.wallet.getEthereumProvider();
+        // Guard: some Warpcast builds leave this promise pending — never block the send forever
+        const p = await Promise.race([
+          farcasterSdk.wallet.getEthereumProvider(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('getEthereumProvider timed out')), 6000))
+        ]);
         if (p) return p;
       }
     } catch (e) {
-      console.warn('[Farcaster] getEthereumProvider() error:', e);
+      console.warn('[Farcaster] getEthereumProvider() error/timeout:', e && e.message);
     }
     if (farcasterSdk.wallet.ethProvider) {
       return farcasterSdk.wallet.ethProvider;
@@ -1117,6 +1121,26 @@ function setupFarcasterSwap() {
       if (!provider) {
         alert('Warpcast wallet provider not found.');
         return;
+      }
+
+      // Diagnostic: surface what the Farcaster host actually supports
+      try {
+        if (farcasterSdk && typeof farcasterSdk.getCapabilities === 'function') {
+          const caps = await Promise.race([
+            farcasterSdk.getCapabilities(),
+            new Promise((res) => setTimeout(() => res(null), 4000))
+          ]);
+          if (caps) {
+            const hasSendCalls = caps.includes('wallet.sendCalls') || caps.includes('wallet_sendCalls');
+            const hasProvider = caps.includes('wallet.getEthereumProvider');
+            appendLog('SYS', 'Host caps — provider:' + hasProvider + ' sendCalls:' + hasSendCalls, 'sys', true);
+            window.__ttlCaps = caps;
+          } else {
+            appendLog('SYS', 'getCapabilities() unavailable on this host', 'warn');
+          }
+        }
+      } catch (capErr) {
+        console.warn('getCapabilities failed:', capErr && capErr.message);
       }
 
       try {
