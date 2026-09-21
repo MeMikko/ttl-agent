@@ -526,7 +526,7 @@ function getEthereumProviderSync() {
       return;
     }
 
-    const provider = getEthereumProvider();
+    const provider = await getEthereumProvider();
     if (!provider) {
       appendLog('SYS', 'No Web3 wallet provider detected. Please install Rabby, MetaMask, or Coinbase Wallet.', 'warn');
       alert('No Web3 wallet detected. Please open in a Web3 browser or install MetaMask / Rabby.');
@@ -1039,7 +1039,7 @@ function setupFarcasterSwap() {
     const impactEl = document.getElementById('fuel-impact-preview');
     if (!outputEl || !ethInput) return;
 
-    const ethVal = parseFloat(ethInput.value);
+    const ethVal = parseFloat((ethInput.value || '').replace(',', '.'));
     if (isNaN(ethVal) || ethVal <= 0) {
       outputEl.textContent = 'Enter ETH amount';
       if (impactEl) impactEl.textContent = '';
@@ -1055,7 +1055,7 @@ function setupFarcasterSwap() {
     try {
       const tokenAddress = appConfig.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
       const weiAmount = BigInt(Math.floor(ethVal * 1e18)).toString();
-      const userAddr = userWalletAddress || '0x4b19ee2a3de2521a3adc901989944c209c0a60ea';
+      const userAddr = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : '0x4b19ee2a3de2521a3adc901989944c209c0a60ea';
 
       const quoteUrl = `https://li.quest/v1/quote?fromChain=8453&toChain=8453&fromToken=0x0000000000000000000000000000000000000000&toToken=${tokenAddress}&fromAmount=${weiAmount}&fromAddress=${userAddr}&slippage=0.03`;
 
@@ -1102,7 +1102,7 @@ function setupFarcasterSwap() {
         return;
       }
 
-      const provider = getEthereumProvider();
+      const provider = await getEthereumProvider();
       if (!provider) {
         alert('Warpcast wallet provider not found.');
         return;
@@ -1121,7 +1121,7 @@ function setupFarcasterSwap() {
 
         const txReq = cachedSwapQuote.transactionRequest;
         const txParams = {
-          from: userWalletAddress || txReq.from,
+          from: (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : txReq.from,
           to: txReq.to,
           value: txReq.value,
           data: txReq.data,
