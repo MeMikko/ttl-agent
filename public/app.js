@@ -449,15 +449,20 @@
   }
 
   // Terminal Log Append
+  // For AGENT messages we render rich formatting (paragraphs, numbered lists, bullets)
+  // via formatAgentMessage(); every other tag stays single-line + escaped.
   function appendLog(tag, msg, tagClass = 'sys', isHighlight = false) {
     const row = document.createElement('div');
     row.className = 'log-line';
 
     const time = new Date().toISOString().substring(11, 19);
+    const isAgent = tagClass === 'agent';
+    const msgHtml = isAgent ? formatAgentMessage(msg) : escapeHtml(msg);
+
     row.innerHTML = `
       <span class="log-time">[${time}]</span>
       <span class="log-tag ${tagClass}">${tag}</span>
-      <span class="log-msg ${isHighlight ? 'highlight' : ''}">${escapeHtml(msg)}</span>
+      <span class="log-msg ${isHighlight ? 'highlight' : ''} ${isAgent ? 'agent-rich' : ''}">${msgHtml}</span>
     `;
 
     terminalBody.appendChild(row);
@@ -467,6 +472,42 @@
 
   function escapeHtml(str) {
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Render an agent reply into safe, readable HTML.
+  // Strategy: escape everything first (XSS-safe), then re-introduce structure —
+  // split into blocks on blank lines / numbered items / bullets so the response
+  // no longer collapses into a single wall of text.
+  function formatAgentMessage(raw) {
+    let text = escapeHtml(String(raw || '').trim());
+    if (!text) return '';
+
+    // Bold **like this** and inline `code`.
+    text = text
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Normalise: force a line break before inline numbered items ("... 1. foo 2. bar")
+    // and before bullet markers so single-line LLM replies still segment.
+    text = text
+      .replace(/\s+(\d{1,2}\.\s)/g, '\n$1')
+      .replace(/\s+([•\-–]\s)/g, '\n$1');
+
+    // Split into lines and wrap numbered / bulleted lines in styled rows.
+    const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean);
+    const html = lines.map(line => {
+      const numMatch = line.match(/^(\d{1,2})\.\s+(.*)$/);
+      if (numMatch) {
+        return `<span class="agent-li agent-li-num"><span class="agent-li-marker">${numMatch[1]}.</span><span class="agent-li-text">${numMatch[2]}</span></span>`;
+      }
+      const bulletMatch = line.match(/^[•\-–]\s+(.*)$/);
+      if (bulletMatch) {
+        return `<span class="agent-li agent-li-bullet"><span class="agent-li-marker">•</span><span class="agent-li-text">${bulletMatch[1]}</span></span>`;
+      }
+      return `<span class="agent-p">${line}</span>`;
+    }).join('');
+
+    return html;
   }
 
   // Autonomous Thought Feed
@@ -580,6 +621,9 @@
       appendLog('SYS', 'Console buffer cleared.', 'sys');
       return;
     }
+
+    // Show a thinking indicator while the agent synthesizes.
+    appendLog('SYS', 'Synthesizing transmission...', 'sys');
 
     // Query via Cloudflare API proxy with walletAddress attached
     try {
