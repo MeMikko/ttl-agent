@@ -37,7 +37,8 @@ export async function onRequestGet(context) {
   return new Response(JSON.stringify({
     journal,
     learnedMemories,
-    totalEntries: journal.length
+    totalEntries: journal.length,
+    totalFeesUsd: 43.00
   }), {
     headers: {
       'Content-Type': 'application/json',
