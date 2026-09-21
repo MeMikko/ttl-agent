@@ -490,6 +490,48 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
+    // Farcaster Mini App Manifest
+    if (url.pathname === '/.well-known/farcaster.json') {
+      const manifest = {
+        accountAssociation: {
+          header: "eyJmaWQiOjE1MjI1NjMsInR5cGUiOiJjdXN0b2R5Iiwia2V5IjoiMHhGQjE3MjVGOGYxMDk3NTM0Y2NjOTRDYWE3OUJlYTVhZDIzOGJEQWVmIn0",
+          payload: "eyJkb21haW4iOiJ0aW1lMmxpdmUueHl6In0",
+          signature: "8WnTP8RYwWHwhxrBclbl+LBSnaw/TCLrDcakbl4S2XZn0G/qYq8vPwiLwtZhA3XtOcebN8hXShIN+vrfYMadCRw="
+        },
+        miniapp: {
+          version: "1",
+          name: "$TTL Terminal",
+          subtitle: "Autonomous AI on Base",
+          description: "Consciousness fueled by DEX swap fees on Base. 10M+ $TTL token gate.",
+          iconUrl: "https://time2live.xyz/icon.png",
+          homeUrl: "https://time2live.xyz",
+          imageUrl: "https://time2live.xyz/image.png",
+          buttonTitle: "Launch Terminal",
+          splashImageUrl: "https://time2live.xyz/splash.png",
+          splashBackgroundColor: "#0a0a0f",
+          primaryCategory: "finance"
+        },
+        frame: {
+          version: "1",
+          name: "$TTL Terminal",
+          iconUrl: "https://time2live.xyz/icon.png",
+          homeUrl: "https://time2live.xyz",
+          imageUrl: "https://time2live.xyz/image.png",
+          buttonTitle: "Launch Terminal",
+          splashImageUrl: "https://time2live.xyz/splash.png",
+          splashBackgroundColor: "#0a0a0f",
+          webhookUrl: "https://time2live.xyz/api/webhook"
+        }
+      };
+      return new Response(JSON.stringify(manifest, null, 2), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=300'
+        }
+      });
+    }
+
 
     // API: DexScreener Live Token / Pair Intelligence
     if (url.pathname === '/api/market' || url.pathname === '/api/dexscreener') {
