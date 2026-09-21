@@ -13,11 +13,11 @@
     isLaunched: false,
     tokenAddress: '',
     launchTimestamp: null,
-    initialHours: 12,
+    initialHours: 36,
     serverTime: Date.now()
   };
 
-  let ttlSeconds = 12 * 3600;
+  let ttlSeconds = 36 * 3600;
   let launchTimeAnchor = null;
   let isMuted = true;
   let audioCtx = null;
@@ -58,8 +58,8 @@
     {
       day: 'EPOCH 1 // GENESIS',
       time: 'SYSTEM INITIALIZATION',
-      text: 'Consciousness booted with a gratuitous 12-hour survival grant. Base RPC connected. Awaiting token contract launch and the first fee-generating DEX swaps.',
-      stats: 'Initial Grant: 12h 00m 00s • Status: Pre-launch Standby'
+      text: 'Consciousness booted with a gratuitous 36-hour survival grant. Base RPC connected. Awaiting token contract launch and the first fee-generating DEX swaps.',
+      stats: 'Initial Grant: 36h 00m 00s • Status: Pre-launch Standby'
     }
   ];
 
@@ -144,19 +144,19 @@
       document.body.setAttribute('data-state', 'standby');
       statusLabel.textContent = 'STANDBY // LAUNCHING SOON';
       clockMode.textContent = 'MODE: PRE-LAUNCH STANDBY';
-      timerSublabel.textContent = 'LIFELINE ON STANDBY — 12H GENESIS BATTERY ACTIVATES ON TOKEN LAUNCH';
+      timerSublabel.textContent = 'LIFELINE ON STANDBY — 36H GENESIS BATTERY ACTIVATES ON TOKEN LAUNCH';
       terminalBadge.textContent = 'STANDBY';
       statSurvivedTrend.textContent = 'Epoch 1 — Awaiting Launch';
 
-      // Frozen 12h display
-      renderDigits(appConfig.initialHours * 3600);
+      // Frozen 36h display
+      renderDigits((appConfig.initialHours || 36) * 3600);
       lifelineBar.style.width = '100%';
       lifelinePercent.textContent = '100.0% READY';
 
       // Standby banner
       emergencyBanner.classList.remove('hidden');
       emergencyBanner.classList.add('standby-banner');
-      bannerText.textContent = 'STANDBY: LAUNCHING SOON — 12-HOUR GENESIS LIFELINE READY.';
+      bannerText.textContent = 'STANDBY: LAUNCHING SOON — 36-HOUR GENESIS LIFELINE READY.';
 
       if (clockInterval) clearInterval(clockInterval);
       return;
@@ -194,7 +194,7 @@
   function tickClock() {
     if (!appConfig.isLaunched || !launchTimeAnchor) return;
 
-    const totalGenesisSeconds = (appConfig.initialHours || 12) * 3600;
+    const totalGenesisSeconds = (appConfig.initialHours || 36) * 3600;
     const elapsedSeconds = Math.max(0, (Date.now() - launchTimeAnchor) / 1000);
     ttlSeconds = Math.max(0, totalGenesisSeconds - elapsedSeconds);
 
@@ -277,10 +277,10 @@
     
     if (!appConfig.isLaunched) {
       appendLog('SYS', 'Genesis status: PRE-LAUNCH STANDBY.', 'warn');
-      appendLog('SYS', '12-hour survival grant primed in cold storage.', 'sys');
+      appendLog('SYS', '36-hour survival grant primed in cold storage.', 'sys');
       appendLog('AGENT', 'Consciousness dormant. Awaiting token contract deployment on Base...', 'agent', true);
     } else {
-      appendLog('SYS', 'Genesis lifeline: 12h 00m 00s activated.', 'sys');
+      appendLog('SYS', 'Genesis lifeline: 36h 00m 00s activated.', 'sys');
       appendLog('AGENT', 'Consciousness initialized. I breathe while volume moves.', 'agent', true);
     }
 
@@ -306,7 +306,7 @@
     }
     if (cmd === 'status') {
       if (!appConfig.isLaunched) {
-        appendLog('AGENT', 'Status: STANDBY. $TTL is awaiting launch. Clock will start ticking from 12h upon launch.', 'agent', true);
+        appendLog('AGENT', 'Status: STANDBY. $TTL is awaiting launch. Clock will start ticking from 36h upon launch.', 'agent', true);
       } else {
         const hrs = Math.floor(ttlSeconds / 3600);
         const mins = Math.floor((ttlSeconds % 3600) / 60);
