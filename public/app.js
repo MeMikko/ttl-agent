@@ -1,10 +1,25 @@
 
-// Farcaster Mini App SDK Initialization
+// Farcaster Mini App Global Detection & Context
 let farcasterSdk = null;
+window.isInsideFarcaster = false;
+
+function isFarcasterEnv() {
+  if (window.isInsideFarcaster) return true;
+  if (window.farcasterSdk?.wallet?.ethProvider || farcasterSdk?.wallet?.ethProvider) return true;
+  const ua = (navigator.userAgent || '').toLowerCase();
+  if (ua.includes('warpcast') || ua.includes('farcaster')) return true;
+  try {
+    if (window.self !== window.top) return true;
+  } catch (e) {
+    return true;
+  }
+  return false;
+}
 
 function getEthereumProvider() {
   return farcasterSdk?.wallet?.ethProvider || window.ethereum || null;
 }
+
 
 (async function initFarcasterMiniApp() {
   try {
@@ -12,8 +27,16 @@ function getEthereumProvider() {
     if (sdk) {
       farcasterSdk = sdk;
       window.farcasterSdk = sdk;
-      const inMiniApp = typeof sdk.isInMiniApp === 'function' ? await sdk.isInMiniApp() : false;
-      if (inMiniApp) {
+      let inMiniApp = false;
+      try {
+        inMiniApp = typeof sdk.isInMiniApp === 'function' ? await sdk.isInMiniApp() : false;
+      } catch (checkErr) {
+        inMiniApp = isFarcasterEnv();
+      }
+      if (inMiniApp || isFarcasterEnv()) {
+        window.isInsideFarcaster = true;
+        isInsideFarcaster = true;
+        console.log('[Farcaster] Running inside Farcaster MiniApp context');
         console.log('[Farcaster] Running inside Farcaster MiniApp context');
         await sdk.actions.ready();
         
@@ -200,7 +223,13 @@ function getEthereumProvider() {
     // 1. Token Address & Dynamic Links
     if (tokenAddr && tokenAddr.startsWith('0x')) {
       contractAddressEl.textContent = tokenAddr;
-      buyActionBtn.href = `https://swap.bankr.bot/?outputCurrency=${tokenAddr}`;
+      if (isFarcasterEnv()) {
+        buyActionBtn.removeAttribute('href');
+        buyActionBtn.removeAttribute('target');
+        buyActionBtn.style.cursor = 'pointer';
+      } else {
+        buyActionBtn.href = `https://swap.bankr.bot/?outputCurrency=${tokenAddr}`;
+      }
       buyActionBtn.textContent = 'BUY $TTL ON BASE';
       buyActionBtn.classList.remove('disabled-btn');
 
@@ -444,7 +473,11 @@ function getEthereumProvider() {
         return;
       }
       if (appConfig.tokenAddress) {
-        window.open(`https://swap.bankr.bot/?outputCurrency=${appConfig.tokenAddress}`, '_blank');
+        if (isFarcasterEnv() && typeof window.openFcSwapModal === 'function') {
+          window.openFcSwapModal();
+        } else {
+          window.open(`https://swap.bankr.bot/?outputCurrency=${appConfig.tokenAddress}`, '_blank');
+        }
       }
       return;
     }
@@ -891,14 +924,35 @@ function setupFarcasterSwap() {
 
   if (!buyBtn || !modal) return;
 
-  // CRITICAL RULE: Intercept click ONLY when inside Farcaster!
-  // In normal browser, isInsideFarcaster is false, so it falls through to normal <a> navigation!
-  buyBtn.addEventListener('click', (e) => {
-    if (isInsideFarcaster) {
-      e.preventDefault();
+  window.openFcSwapModal = openFcSwapModal;
+
+  // Intercept click: In Farcaster, open in-app swap modal.
+  // In normal browser, let normal <a> link navigation to swap.bankr.bot happen!
+  function handleBuyClick(e) {
+    if (isFarcasterEnv()) {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
       openFcSwapModal();
+      return false;
+    }
+  }
+
+  buyBtn.addEventListener('click', handleBuyClick);
+  buyBtn.addEventListener('touchend', (e) => {
+    if (isFarcasterEnv()) {
+      e.preventDefault();
+      handleBuyClick(e);
     }
   });
+
+  // If already detected as Farcaster, prevent default link behavior on the element
+  if (isFarcasterEnv()) {
+    buyBtn.removeAttribute('href');
+    buyBtn.removeAttribute('target');
+    buyBtn.style.cursor = 'pointer';
+  }
 
   function openFcSwapModal() {
     modal.classList.remove('hidden');
