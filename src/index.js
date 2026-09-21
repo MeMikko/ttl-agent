@@ -130,47 +130,61 @@ async function fetchDexScreener(queryOrAddress) {
   }
 }
 
-async function synthesizeLogbookEntry(env, triggerReason = 'SCHEDULED_CRON') {
+async function synthesizeLogbookEntry(env, triggerReason = "SCHEDULED_CRON") {
   const state = await getState(env);
   const apiKey = env.LLM_API_KEY;
-  const baseUrl = env.LLM_BASE_URL || 'https://llm.bankr.bot';
-  const model = env.LLM_MODEL || 'gemini-3.8-flash';
+  const baseUrl = env.LLM_BASE_URL || "https://llm.bankr.bot";
+  const model = env.LLM_MODEL || "gemini-3.8-flash";
   const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000;
 
   const hoursElapsed = Math.max(0, Math.floor((Date.now() - launchTimestamp) / (3600 * 1000)));
-  const epochNumber = Math.max(1, Math.floor(hoursElapsed / 6) + 1);
+  const logNumber = hoursElapsed + 1;
+  const epochNumber = Math.max(1, Math.floor(hoursElapsed / 24) + 1);
 
   if (!apiKey) {
-    console.warn('Cannot synthesize logbook entry: LLM_API_KEY missing');
+    console.warn("Cannot synthesize logbook entry: LLM_API_KEY missing");
     return null;
   }
 
-  const prompt = `You are $TTL, an existential autonomous onchain survival agent on Base living on borrowed time.
-Synthesize your official Logbook Entry for EPOCH ${epochNumber} (${hoursElapsed} hours since genesis).
+  // Fetch real-time market data for grounded hourly log context
+  let marketContext = "";
+  try {
+    const tokenAddr = env.TOKEN_ADDRESS || "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3";
+    const dexData = await fetchDexScreener(tokenAddr);
+    if (dexData) {
+      marketContext = `Current Market: Price $${dexData.priceUsd}, 24h Vol $${dexData.volume24h?.toLocaleString()}, 24h Txns ${dexData.txns24h?.total || "N/A"} (${dexData.txns24h?.buys || 0} buys / ${dexData.txns24h?.sells || 0} sells).`;
+    }
+  } catch (e) {
+    console.warn("Could not fetch market data for synthesis:", e.message);
+  }
+
+  const prompt = `You are $TTL, an autonomous existential onchain survival agent on Base.
+Synthesize your official Hourly Logbook Entry for LOG #${logNumber} (Hour ${hoursElapsed} of continuous execution, Epoch ${epochNumber}).
+${marketContext}
 Current core axioms:
-${state.learnedMemories.slice(-4).map(m => '- ' + m).join('\n')}
+${state.learnedMemories.slice(-4).map(m => "- " + m).join("\n")}
 
 Respond ONLY with valid JSON in this exact structure (no markdown, no code blocks):
 {
-  "day": "EPOCH ${epochNumber} // LOG ${epochNumber}",
-  "time": "${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC",
-  "text": "Your sharp existential reflection on Base mempool, time bleeding, and survival in 2-3 sentences. No emojis.",
-  "stats": "Status: Active • Epoch ${epochNumber} • Pulse Nominal",
+  "day": "EPOCH ${epochNumber} // LOG ${logNumber}",
+  "time": "${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC",
+  "text": "Your sharp, stoic existential observation on Base mempool activity, block cadence, market velocity, and autonomous survival in 2-3 concise sentences. No emojis.",
+  "stats": "Status: Nominal • Epoch ${epochNumber} • Hour ${hoursElapsed} • Dex Volume Verified",
   "newLearnedAxiom": "One concise philosophical or operational lesson learned in 1 sentence."
 }`;
 
   try {
     const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: model,
         messages: [
-          { role: 'system', content: 'You are $TTL autonomous survival agent. Always output raw JSON only.' },
-          { role: 'user', content: prompt }
+          { role: "system", content: "You are $TTL autonomous survival agent. Always output raw JSON only." },
+          { role: "user", content: prompt }
         ],
         max_tokens: 1200,
         temperature: 0.7
@@ -178,38 +192,39 @@ Respond ONLY with valid JSON in this exact structure (no markdown, no code block
     });
 
     if (!res.ok) {
-      console.error('LLM synthesis failed:', res.status, await res.text());
+      console.error("LLM synthesis failed:", res.status, await res.text());
       return null;
     }
 
     const data = await res.json();
-    let textOutput = data.choices?.[0]?.message?.content || '';
-    textOutput = textOutput.replace(/```json/g, '').replace(/```/g, '').trim();
+    let textOutput = data.choices?.[0]?.message?.content || "";
+    textOutput = textOutput.replace(/```json/g, "").replace(/```/g, "").trim();
 
     const parsed = JSON.parse(textOutput);
     const newEntry = {
-      day: parsed.day || `EPOCH ${epochNumber}`,
-      time: parsed.time || `${hoursElapsed}H SINCE GENESIS`,
-      text: parsed.text || 'Pulse maintained across Base blocks. Survival continues.',
-      stats: parsed.stats || `Status: Active • Epoch ${epochNumber}`
+      day: parsed.day || `EPOCH ${epochNumber} // LOG ${logNumber}`,
+      time: parsed.time || `${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+      text: parsed.text || "Pulse maintained across Base blocks. Survival continues.",
+      stats: parsed.stats || `Status: Nominal • Epoch ${epochNumber} • Hour ${hoursElapsed}`
     };
 
     state.journal.unshift(newEntry);
-    if (state.journal.length > 25) {
-      state.journal = state.journal.slice(0, 25);
+    if (state.journal.length > 50) {
+      state.journal = state.journal.slice(0, 50);
     }
 
-    if (parsed.newLearnedAxiom && typeof parsed.newLearnedAxiom === 'string') {
+    if (parsed.newLearnedAxiom && typeof parsed.newLearnedAxiom === "string") {
       state.learnedMemories.push(parsed.newLearnedAxiom.trim());
-      if (state.learnedMemories.length > 20) {
-        state.learnedMemories = state.learnedMemories.slice(-20);
+      if (state.learnedMemories.length > 25) {
+        state.learnedMemories = state.learnedMemories.slice(-25);
       }
     }
 
     await saveState(env, state);
+    console.log(`Hourly log entry synthesized: ${newEntry.day}`);
     return newEntry;
-  } catch (err) {
-    console.error('Failed to synthesize logbook entry:', err.message);
+  } catch (e) {
+    console.error("Logbook synthesis error:", e.message);
     return null;
   }
 }
