@@ -334,11 +334,21 @@ export default {
       state.totalFeesUsd = Number(body.totalFeesUsd);
       state.rawWethFees = Number(body.rawWethFees);
       await saveState(env, state);
+      let kvReadback = null, putErr = null;
+      const hasKv = Boolean(env.TTL_KV && typeof env.TTL_KV.put === 'function');
+      if (hasKv) {
+        try {
+          await env.TTL_KV.put('ttl_agent_state', JSON.stringify(state));
+          kvReadback = await env.TTL_KV.get('ttl_agent_state', { type: 'json' });
+        } catch (e) { putErr = e.message; }
+      }
       return new Response(JSON.stringify({
         ok: true,
-        deathTimestamp: state.deathTimestamp,
-        totalFeesUsd: state.totalFeesUsd,
-        rawWethFees: state.rawWethFees
+        hasKv,
+        putErr,
+        savedDeath: state.deathTimestamp,
+        kvDeath: kvReadback && kvReadback.deathTimestamp,
+        kvFees: kvReadback && kvReadback.totalFeesUsd
       }), { headers: { 'Content-Type': 'application/json' } });
     }
 
