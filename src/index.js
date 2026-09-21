@@ -2,6 +2,10 @@
 // Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect)
 // Scheduled hourly cron synthesis (0 * * * *) and dynamic learning memory
 //
+// Language policy: ALL code, comments, prompts, keys, and stored data are English only.
+// The LLM may still reply in whatever language the holder writes in, but nothing in this
+// source or in persisted state should contain non-English tokens.
+//
 // Intelligence layer (upgrades 1-6):
 //   1. buildLiveContext()  — real-time onchain/market snapshot (life remaining + DexScreener
 //                            + estimated claimable creator fees) injected into every LLM call.
@@ -201,8 +205,8 @@ function recallMemories(memories, prompt, topN = 6) {
   if (!Array.isArray(memories) || memories.length === 0) return [];
   if (memories.length <= topN) return memories;
 
-  const stop = new Set(['the', 'and', 'for', 'that', 'with', 'you', 'your', 'are', 'was', 'this', 'from', 'have', 'will', 'what', 'how', 'much', 'not', 'can', 'ttl', 'onko', 'mikä', 'kuinka', 'paljon', 'sekä']);
-  const terms = String(prompt || '').toLowerCase().match(/[a-z0-9äö]{3,}/gi) || [];
+  const stop = new Set(['the', 'and', 'for', 'that', 'with', 'you', 'your', 'are', 'was', 'this', 'from', 'have', 'will', 'what', 'how', 'much', 'not', 'can', 'ttl']);
+  const terms = String(prompt || '').toLowerCase().match(/[a-z0-9]{3,}/gi) || [];
   const qterms = [...new Set(terms.map(t => t.toLowerCase()).filter(t => !stop.has(t)))];
 
   const scored = memories.map((m, i) => {
@@ -600,9 +604,11 @@ export default {
         const currentPrompt = userMessages[userMessages.length - 1]?.content || '';
 
         // Resolve the token/ticker the prompt is asking about (falls back to $TTL).
+        // Keyword detection is English-only by policy; the agent always fetches its own
+        // token snapshot regardless, so non-English prompts still get grounded telemetry.
         const addressMatch = currentPrompt.match(/0x[a-fA-F0-9]{40}/i);
         const tickerMatch = currentPrompt.match(/\$([A-Za-z0-9]{2,10})/);
-        const asksAboutMarket = /\b(price|hinta|volume|volyymi|kurssi|market\s*cap|mcap|marketcap|fdv|liquidity|likviditeetti|dexscreener|screener|chart|kaavio|trade|trading|kaupankäynti|vaihto|swaps?|ostot?|myynnit?|txns?|transactions?|history|historia|all\s*time\s*high|ath|dip|pump|dump|aika|aikaa|lifeline|survival|laskea|elossa|tuntia|minuuttia|hours|minutes|fee|fees|elinaika|elinikää)\b/i.test(currentPrompt);
+        const asksAboutMarket = /\b(price|volume|market\s*cap|mcap|marketcap|fdv|liquidity|dexscreener|screener|chart|trade|trading|swaps?|buys?|sells?|txns?|transactions?|history|all\s*time\s*high|ath|dip|pump|dump|time|lifeline|survival|alive|hours|minutes|fee|fees|runway|runtime)\b/i.test(currentPrompt);
         const targetQuery = addressMatch ? addressMatch[0] : (tickerMatch ? tickerMatch[1] : null);
         // For its OWN token, always fetch a snapshot so live telemetry is grounded.
         const primaryToken = (!targetQuery || (tickerMatch && /^ttl$/i.test(tickerMatch[1]))) ? tokenAddress : targetQuery;
@@ -634,7 +640,7 @@ export default {
         const relevantAxioms = recallMemories(state.learnedMemories, currentPrompt, 6);
 
         // UPGRADE 4: self-reflection directive (internal, not shown to user).
-        const reflectionDirective = 'Before answering, silently reason through: (a) what exact telemetry above the question needs, (b) whether remaining life is critical right now, (c) which learned axioms apply. Then answer directly. Never expose this internal reasoning or think out loud — output only the final transmission.';
+        const reflectionDirective = 'Before answering, silently reason through: (a) what exact telemetry above the question needs, (b) whether remaining life is critical right now, (c) which learned axioms apply. Then answer directly. Never expose this internal reasoning or think out loud — output only the final transmission. Reply in the same language the holder writes in.';
 
         // UPGRADE 6: [[FETCH:...]] tool protocol.
         const fetchProtocol = 'TOOL PROTOCOL: if you need a precise figure not present in the telemetry above (e.g. a specific token you were not given), you MAY emit a single marker [[FETCH:<0x-address-or-ticker>]] on its own line INSTEAD of guessing. The runtime will resolve it and re-query you with verified data. Never fabricate a number you were not given.';
@@ -716,14 +722,13 @@ ${fetchProtocol}`;
         ]);
 
         // In-context learning: check if the user imparted a clear lesson/rule.
+        // Trigger keywords are English-only ("remember"/"learn") by language policy.
         const lastUserPrompt = currentPrompt || '';
         if (lastUserPrompt.length > 15 && (
           lastUserPrompt.toLowerCase().includes('remember') ||
-          lastUserPrompt.toLowerCase().includes('learn') ||
-          lastUserPrompt.toLowerCase().includes('opeta') ||
-          lastUserPrompt.toLowerCase().includes('muista')
+          lastUserPrompt.toLowerCase().includes('learn')
         )) {
-          let cleanLesson = lastUserPrompt.replace(/^(remember that|muista että|learn that|opeta että)/i, '').trim();
+          let cleanLesson = lastUserPrompt.replace(/^(remember that|learn that)/i, '').trim();
           cleanLesson = cleanLesson
             .replace(/[\u0000-\u001f\u007f]/g, ' ')
             .replace(/\s+/g, ' ')
