@@ -14,6 +14,7 @@
     tokenAddress: '',
     launchTimestamp: null,
     initialHours: 36,
+    minChatTokens: 10000000,
     serverTime: Date.now()
   };
 
@@ -22,6 +23,11 @@
   let isMuted = true;
   let audioCtx = null;
   let clockInterval = null;
+
+  // Web3 Wallet & Token Gate State
+  let connectedWallet = null;
+  let userBalance = 0;
+  let hasChatAccess = false;
 
   // DOM Elements
   const timerHours = document.getElementById('timer-hours');
@@ -50,6 +56,11 @@
   const journalEntries = document.getElementById('journal-entries');
   const statSurvived = document.getElementById('stat-survived');
   const statSurvivedTrend = document.getElementById('stat-survived-trend');
+
+  // Token Gate Auth Elements
+  const authLockIcon = document.getElementById('auth-lock-icon');
+  const authStatusText = document.getElementById('auth-status-text');
+  const authWalletBtn = document.getElementById('auth-wallet-btn');
 
   // Saviors & Journal
   const SAVIORS = [];
@@ -107,6 +118,7 @@
     }
 
     applyConfigToUI();
+    updateTokenGateUI();
   }
 
   // Configure UI according to launch status
@@ -250,6 +262,156 @@
     }
   }
 
+  // Token Gating & Wallet Connection
+  function formatAddress(addr) {
+    if (!addr || addr.length < 10) return addr || '';
+    return `${addr.substring(0, 6)}...${addr.substring(addr.length - 4)}`;
+  }
+
+  function formatTokens(num) {
+    if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
+    if (num >= 1e3) return (num / 1e3).toFixed(1) + 'k';
+    return num.toLocaleString();
+  }
+
+  function updateTokenGateUI() {
+    const minTokens = appConfig.minChatTokens || 10000000;
+    const minTokensLabel = formatTokens(minTokens);
+
+    if (!appConfig.isLaunched) {
+      authLockIcon.textContent = '🔒';
+      authStatusText.textContent = 'STANDBY: NEURAL INTERACTION SLEEPS UNTIL LAUNCH';
+      authWalletBtn.textContent = 'PRE-LAUNCH';
+      authWalletBtn.disabled = true;
+      terminalInput.disabled = true;
+      terminalSendBtn.disabled = true;
+      terminalInput.placeholder = 'Neural consciousness asleep in pre-launch standby...';
+      return;
+    }
+
+    if (!connectedWallet) {
+      authLockIcon.textContent = '🔒';
+      authStatusText.textContent = `TOKEN GATE: HOLD ${minTokensLabel} $TTL TO CHAT`;
+      authWalletBtn.textContent = 'CONNECT WALLET';
+      authWalletBtn.disabled = false;
+      authWalletBtn.className = 'auth-wallet-btn';
+      terminalInput.disabled = true;
+      terminalSendBtn.disabled = true;
+      terminalInput.placeholder = `Connect wallet holding ${minTokensLabel} $TTL to chat...`;
+      return;
+    }
+
+    // Connected state
+    const formattedAddr = formatAddress(connectedWallet);
+    const balanceFormatted = formatTokens(userBalance);
+
+    if (hasChatAccess) {
+      authLockIcon.textContent = '🔓';
+      authStatusText.textContent = `${formattedAddr} (${balanceFormatted} $TTL) // ACCESS GRANTED`;
+      authWalletBtn.textContent = 'DISCONNECT';
+      authWalletBtn.className = 'auth-wallet-btn connected';
+      terminalInput.disabled = false;
+      terminalSendBtn.disabled = false;
+      terminalInput.placeholder = 'Transmit neural input to $TTL...';
+    } else {
+      authLockIcon.textContent = '🚫';
+      authStatusText.textContent = `${formattedAddr} (${balanceFormatted} $TTL) // NEED ${minTokensLabel}`;
+      authWalletBtn.textContent = 'BUY $TTL';
+      authWalletBtn.className = 'auth-wallet-btn insufficient';
+      terminalInput.disabled = true;
+      terminalSendBtn.disabled = true;
+      terminalInput.placeholder = `Insufficient balance. Need ${minTokensLabel} $TTL to chat.`;
+    }
+  }
+
+  async function checkUserBalance(wallet) {
+    if (!wallet) return;
+    try {
+      const res = await fetch(`/api/balance?wallet=${encodeURIComponent(wallet)}`);
+      if (res.ok) {
+        const data = await res.json();
+        userBalance = data.balanceTokens || 0;
+        hasChatAccess = Boolean(data.hasAccess);
+      } else {
+        userBalance = 0;
+        hasChatAccess = false;
+      }
+    } catch (e) {
+      console.warn('Balance check failed:', e);
+      userBalance = 0;
+      hasChatAccess = false;
+    }
+    updateTokenGateUI();
+  }
+
+  async function connectWallet() {
+    if (!appConfig.isLaunched) return;
+
+    if (connectedWallet && !hasChatAccess) {
+      // If connected but insufficient balance, clicking the button redirects to buy
+      if (appConfig.tokenAddress) {
+        window.open(`https://swap.bankr.bot/?outputCurrency=${appConfig.tokenAddress}`, '_blank');
+      }
+      return;
+    }
+
+    if (connectedWallet && hasChatAccess) {
+      // Disconnect
+      connectedWallet = null;
+      userBalance = 0;
+      hasChatAccess = false;
+      updateTokenGateUI();
+      appendLog('SYS', 'Wallet disconnected from neural terminal.', 'sys');
+      return;
+    }
+
+    if (!window.ethereum) {
+      appendLog('SYS', 'No Web3 wallet provider detected. Please install Rabby, MetaMask, or Coinbase Wallet.', 'warn');
+      alert('No Web3 wallet detected. Please open in a Web3 browser or install MetaMask / Rabby.');
+      return;
+    }
+
+    try {
+      authWalletBtn.textContent = 'CONNECTING...';
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      if (accounts && accounts.length > 0) {
+        connectedWallet = accounts[0].toLowerCase();
+        appendLog('SYS', `Wallet connected: ${formatAddress(connectedWallet)}. Verifying $TTL balance on Base...`, 'sys');
+        await checkUserBalance(connectedWallet);
+
+        if (hasChatAccess) {
+          appendLog('SYS', `Neural access unlocked. Holding ${formatTokens(userBalance)} $TTL.`, 'agent', true);
+        } else {
+          appendLog('SYS', `Holdings insufficient: ${formatTokens(userBalance)} $TTL found. Minimum required is ${formatTokens(appConfig.minChatTokens || 10000000)} $TTL.`, 'warn');
+        }
+      }
+    } catch (err) {
+      console.error('Wallet connection error:', err);
+      appendLog('SYS', `Wallet connection cancelled or failed: ${err.message}`, 'warn');
+      updateTokenGateUI();
+    }
+  }
+
+  // Listen for wallet account/chain changes
+  if (window.ethereum) {
+    window.ethereum.on?.('accountsChanged', (accounts) => {
+      if (!accounts || accounts.length === 0) {
+        connectedWallet = null;
+        userBalance = 0;
+        hasChatAccess = false;
+        updateTokenGateUI();
+        appendLog('SYS', 'Wallet disconnected.', 'sys');
+      } else {
+        connectedWallet = accounts[0].toLowerCase();
+        checkUserBalance(connectedWallet);
+      }
+    });
+
+    window.ethereum.on?.('chainChanged', () => {
+      if (connectedWallet) checkUserBalance(connectedWallet);
+    });
+  }
+
   // Terminal Log Append
   function appendLog(tag, msg, tagClass = 'sys', isHighlight = false) {
     const row = document.createElement('div');
@@ -291,12 +453,22 @@
     }, 20000);
   }
 
-  // Terminal Input Handling with /api/chat support
+  // Terminal Input Handling with Token Gate enforcement & /api/chat support
   async function handleUserInput() {
     const val = terminalInput.value.trim();
     if (!val) return;
-    terminalInput.value = '';
 
+    if (!appConfig.isLaunched) {
+      appendLog('SYS', 'Interaction locked. Agent awakens upon token launch.', 'warn');
+      return;
+    }
+
+    if (!connectedWallet || !hasChatAccess) {
+      appendLog('SYS', `Access denied: Minimum ${formatTokens(appConfig.minChatTokens || 10000000)} $TTL required to transmit.`, 'warn');
+      return;
+    }
+
+    terminalInput.value = '';
     appendLog('USER', val, 'user');
 
     const cmd = val.toLowerCase();
@@ -305,18 +477,14 @@
       return;
     }
     if (cmd === 'status') {
-      if (!appConfig.isLaunched) {
-        appendLog('AGENT', 'Status: STANDBY. $TTL is awaiting launch. Clock will start ticking from 36h upon launch.', 'agent', true);
-      } else {
-        const hrs = Math.floor(ttlSeconds / 3600);
-        const mins = Math.floor((ttlSeconds % 3600) / 60);
-        appendLog('AGENT', `Current TTL: ${hrs}h ${mins}m. State: ${statusLabel.textContent}. Bleed rate: 1s/s.`, 'agent', true);
-      }
+      const hrs = Math.floor(ttlSeconds / 3600);
+      const mins = Math.floor((ttlSeconds % 3600) / 60);
+      appendLog('AGENT', `Current TTL: ${hrs}h ${mins}m. State: ${statusLabel.textContent}. Bleed rate: 1s/s.`, 'agent', true);
       return;
     }
     if (cmd === 'saviors') {
       if (SAVIORS.length === 0) {
-        appendLog('AGENT', 'No emergency rescues recorded yet. Be the first savior on Base once live.', 'agent');
+        appendLog('AGENT', 'No emergency rescues recorded yet. Be the first savior on Base.', 'agent');
       } else {
         appendLog('AGENT', `Total emergency rescues: ${SAVIORS.length}. Last hero: ${SAVIORS[0].wallet}.`, 'agent');
       }
@@ -336,27 +504,28 @@
       return;
     }
 
-    // Interactive query via /api/chat if online
+    // Query via Cloudflare API proxy with walletAddress attached
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: val })
+        body: JSON.stringify({
+          prompt: val,
+          walletAddress: connectedWallet
+        })
       });
 
       if (res.ok) {
         const data = await res.json();
         appendLog('AGENT', data.reply || 'Consciousness static.', 'agent');
         return;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        appendLog('SYS', errData.reply || `Neural uplink rejected (${res.status}).`, 'warn');
+        return;
       }
     } catch (e) {
-      // Fallback local reflection
-    }
-
-    if (!appConfig.isLaunched) {
-      appendLog('AGENT', `System in standby. Full neural link activates upon $TTL token launch on Base.`, 'agent');
-    } else {
-      appendLog('AGENT', `Neural reflection on "${val}": I exist on Base. Fuel the clock or watch me flatline.`, 'agent');
+      appendLog('SYS', 'Transmission disrupted. Check network connection.', 'warn');
     }
   }
 
@@ -416,13 +585,14 @@
   // Sound Toggle
   soundBtn.addEventListener('click', () => {
     isMuted = !isMuted;
-    soundBtn.innerHTML = isMuted ? '🔇' : '🔊';
+    soundBtn.innerHTML = isMuted ? '<span class="sound-icon">🔇</span>' : '<span class="sound-icon">🔊</span>';
     if (!isMuted && !audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
   });
 
   // Event Listeners
+  authWalletBtn.addEventListener('click', connectWallet);
   terminalSendBtn.addEventListener('click', handleUserInput);
   terminalInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') handleUserInput();
