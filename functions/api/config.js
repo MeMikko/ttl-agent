@@ -12,7 +12,9 @@ export async function onRequestGet(context) {
     tokenAddress,
     launchTimestamp,
     initialHours,
-    serverTime: Date.now()
+    serverTime: Date.now(),
+    totalFeesUsd: 43.00,
+    rawWethFees: 0.03145
   }), {
     headers: {
       'Content-Type': 'application/json',
