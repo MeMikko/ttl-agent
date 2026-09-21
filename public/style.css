@@ -595,6 +595,73 @@ body[data-state="dead"] {
   font-weight: 500;
 }
 
+/* Terminal Auth & Token Gate Bar */
+.terminal-auth-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(15, 20, 30, 0.95);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  gap: 10px;
+  font-size: 0.72rem;
+}
+
+.auth-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.auth-lock-icon {
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.auth-status-text {
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.04em;
+}
+
+.auth-wallet-btn {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.auth-wallet-btn:hover {
+  border-color: var(--border-focus);
+  color: #fff;
+}
+
+.auth-wallet-btn.connected {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: var(--color-green);
+}
+
+.auth-wallet-btn.insufficient {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: var(--color-red);
+}
+
 .terminal-input-row {
   display: flex;
   align-items: center;
@@ -620,6 +687,11 @@ body[data-state="dead"] {
   font-size: 0.85rem;
 }
 
+#terminal-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 #terminal-input::placeholder {
   color: var(--text-dim);
 }
@@ -637,7 +709,13 @@ body[data-state="dead"] {
   transition: all 0.2s;
 }
 
-.terminal-send-btn:hover {
+.terminal-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.terminal-send-btn:hover:not(:disabled) {
   color: #fff;
   border-color: var(--border-focus);
 }
@@ -1125,6 +1203,20 @@ body[data-state="dead"] {
     height: 310px;
     padding: 12px;
     font-size: 0.78rem;
+  }
+
+  .terminal-auth-bar {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  .auth-status-text {
+    font-size: 0.68rem;
+  }
+
+  .auth-wallet-btn {
+    padding: 4px 10px;
+    font-size: 0.68rem;
   }
 
   .terminal-input-row {
