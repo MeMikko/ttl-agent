@@ -534,6 +534,61 @@ export default {
       });
     }
 
+    // API: DexScreener Live Token / Pair Intelligence
+    if (url.pathname === '/api/market' || url.pathname === '/api/dexscreener') {
+      const target = url.searchParams.get('token') || url.searchParams.get('q') || env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
+      const marketData = await fetchDexScreener(target);
+      return new Response(JSON.stringify(marketData || { error: 'NO_PAIR_FOUND', query: target }), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=15'
+        }
+      });
+    }
+
+    if (url.pathname === '/api/config') {
+      const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
+        ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
+        : true;
+      const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
+      const baseHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
+      const minChatTokens = env.MIN_CHAT_TOKENS ? Number(env.MIN_CHAT_TOKENS) : 10000000;
+
+      const cfgState = await getState(env);
+      const nowSec = Math.floor(Date.now() / 1000);
+      let launchTimestamp = cfgState.launchTimestamp || (env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000);
+      if (launchTimestamp < 1e11) launchTimestamp = launchTimestamp * 1000;
+
+      let initialHours;
+      if (cfgState.deathTimestamp && cfgState.deathTimestamp > nowSec) {
+        const remainingSec = cfgState.deathTimestamp - nowSec;
+        const elapsedSec = Math.max(0, (Date.now() - launchTimestamp) / 1000);
+        initialHours = (remainingSec + elapsedSec) / 3600;
+      } else {
+        initialHours = baseHours + (Number(cfgState.extraHours) || 0);
+      }
+
+      return new Response(JSON.stringify({
+        isLaunched,
+        tokenAddress,
+        launchTimestamp,
+        initialHours,
+        minChatTokens,
+        serverTime: Date.now(),
+        hasApiKey: Boolean(env.LLM_API_KEY),
+        totalFeesUsd: Number(cfgState.totalFeesUsd) || 0,
+        rawWethFees: Number(cfgState.rawWethFees) || 0,
+        deathTimestamp: cfgState.deathTimestamp || null
+      }), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store, no-cache, must-revalidate'
+        }
+      });
+    }
+
     if (url.pathname === '/api/journal' || url.pathname === '/api/state') {
       const state = await getState(env);
       return new Response(JSON.stringify({
