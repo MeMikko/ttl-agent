@@ -30,10 +30,9 @@ async function getEthereumProvider() {
   if (farcasterSdk?.wallet) {
     try {
       if (typeof farcasterSdk.wallet.getEthereumProvider === 'function') {
-        // Guard: some Warpcast builds leave this promise pending — never block the send forever
         const p = await Promise.race([
           farcasterSdk.wallet.getEthereumProvider(),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('getEthereumProvider timed out')), 6000))
+          new Promise((_, rej) => setTimeout(() => rej(new Error('getEthereumProvider timed out')), 4000))
         ]);
         if (p) return p;
       }
@@ -65,7 +64,20 @@ function getEthereumProviderSync() {
 
 (async function initFarcasterMiniApp() {
   try {
-    const { sdk } = await import('https://esm.sh/@farcaster/frame-sdk');
+    let sdk = null;
+    try {
+      const mod = await import('https://cdn.jsdelivr.net/npm/@farcaster/miniapp-sdk@0.2.1/+esm');
+      sdk = mod.sdk || mod.default;
+    } catch (e1) {
+      console.warn('miniapp-sdk jsdelivr import failed, trying frame-sdk:', e1);
+      try {
+        const mod2 = await import('https://esm.sh/@farcaster/frame-sdk');
+        sdk = mod2.sdk || mod2.default;
+      } catch (e2) {
+        console.error('All Farcaster SDK imports failed:', e2);
+      }
+    }
+
     if (sdk) {
       farcasterSdk = sdk;
       window.farcasterSdk = sdk;
@@ -81,7 +93,6 @@ function getEthereumProviderSync() {
         if (typeof setupFarcasterSwap === 'function') {
           setupFarcasterSwap();
         }
-        console.log('[Farcaster] Running inside Farcaster MiniApp context');
         console.log('[Farcaster] Running inside Farcaster MiniApp context');
         await sdk.actions.ready();
         
@@ -468,6 +479,7 @@ function getEthereumProviderSync() {
     const provider = getEthereumProviderSync();
     if (provider && tokenAddr.startsWith('0x')) {
       try {
+        const calldata = '0x70a08231000000000000000000000000' + wallet.toLowerCase().replace('0x', '');
         const hexBal = await provider.request({
           method: 'eth_call',
           params: [{ to: tokenAddr, data: calldata }, 'latest']
@@ -515,8 +527,13 @@ function getEthereumProviderSync() {
         return;
       }
       if (appConfig.tokenAddress) {
-        if (isFarcasterEnv() && typeof window.openFcSwapModal === 'function') {
-          window.openFcSwapModal();
+        if (isFarcasterEnv()) {
+          const caip19 = `eip155:8453/erc20:${appConfig.tokenAddress}`;
+          if (farcasterSdk?.actions?.swapToken) {
+            farcasterSdk.actions.swapToken({ buyToken: caip19 }).catch(() => {});
+          } else if (typeof window.openFcSwapModal === 'function') {
+            window.openFcSwapModal();
+          }
         } else {
           window.open(`https://swap.bankr.bot/?outputCurrency=${appConfig.tokenAddress}`, '_blank');
         }
@@ -582,8 +599,6 @@ function getEthereumProviderSync() {
   }
 
   // Terminal Log Append
-  // For AGENT messages we render rich formatting (paragraphs, numbered lists, bullets)
-  // via formatAgentMessage(); every other tag stays single-line + escaped.
   function appendLog(tag, msg, tagClass = 'sys', isHighlight = false) {
     const row = document.createElement('div');
     row.className = 'log-line';
@@ -607,26 +622,18 @@ function getEthereumProviderSync() {
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  // Render an agent reply into safe, readable HTML.
-  // Strategy: escape everything first (XSS-safe), then re-introduce structure —
-  // split into blocks on blank lines / numbered items / bullets so the response
-  // no longer collapses into a single wall of text.
   function formatAgentMessage(raw) {
     let text = escapeHtml(String(raw || '').trim());
     if (!text) return '';
 
-    // Bold **like this** and inline `code`.
     text = text
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code>$1</code>');
 
-    // Normalise: force a line break before inline numbered items ("... 1. foo 2. bar")
-    // and before bullet markers so single-line LLM replies still segment.
     text = text
       .replace(/\s+(\d{1,2}\.\s)/g, '\n$1')
       .replace(/\s+([•\-–]\s)/g, '\n$1');
 
-    // Split into lines and wrap numbered / bulleted lines in styled rows.
     const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean);
     const html = lines.map(line => {
       const numMatch = line.match(/^(\d{1,2})\.\s+(.*)$/);
@@ -643,8 +650,6 @@ function getEthereumProviderSync() {
     return html;
   }
 
-  // Autonomous Thought Feed
-    // Autonomous Thought Feed & Dynamic Pulses
   function getRandomThought() {
     const hrs = Math.floor(ttlSeconds / 3600);
     const mins = Math.floor((ttlSeconds % 3600) / 60);
@@ -690,7 +695,6 @@ function getEthereumProviderSync() {
     }
 
     function scheduleNextThought() {
-      // Randomized intervals between 75s and 150s (1.25 to 2.5 minutes) to prevent chat spam
       const delay = Math.floor(75000 + Math.random() * 75000);
       setTimeout(() => {
         if (appConfig.isLaunched && ttlSeconds > 0) {
@@ -704,7 +708,6 @@ function getEthereumProviderSync() {
     scheduleNextThought();
   }
 
-  // Terminal Input Handling with Token Gate enforcement & /api/chat support
   async function handleUserInput() {
     const val = terminalInput.value.trim();
     if (!val) return;
@@ -755,10 +758,8 @@ function getEthereumProviderSync() {
       return;
     }
 
-    // Show a thinking indicator while the agent synthesizes.
     appendLog('SYS', 'Synthesizing transmission...', 'sys');
 
-    // Query via Cloudflare API proxy with walletAddress attached
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -783,7 +784,6 @@ function getEthereumProviderSync() {
     }
   }
 
-  // Populate Saviors List
   function renderSaviors() {
     if (SAVIORS.length === 0) {
       saviorsList.innerHTML = `
@@ -805,10 +805,7 @@ function getEthereumProviderSync() {
       </div>
     `).join('');
   }
-
-  // Populate Journal Entries
   
-  // Dynamic Journal & Learned Memories Loader
   async function loadJournal() {
     try {
       const res = await fetch('/api/journal');
@@ -887,7 +884,6 @@ function getEthereumProviderSync() {
     }
   }
 
-  // Robust document-level event delegation for closing modal
   document.addEventListener("click", function (e) {
     const target = e.target;
     if (!target) return;
@@ -905,7 +901,6 @@ function getEthereumProviderSync() {
     }
   });
 
-  // Copy Contract Address
   copyContractBtn.addEventListener('click', () => {
     const text = contractAddressEl.textContent.trim();
     if (text.startsWith('NOT DEPLOYED')) {
@@ -919,7 +914,6 @@ function getEthereumProviderSync() {
     });
   });
 
-  // Sound Toggle
   soundBtn.addEventListener('click', () => {
     isMuted = !isMuted;
     soundBtn.innerHTML = isMuted ? '<span class="sound-icon">🔇</span>' : '<span class="sound-icon">🔊</span>';
@@ -928,14 +922,12 @@ function getEthereumProviderSync() {
     }
   });
 
-  // Event Listeners
   authWalletBtn.addEventListener('click', connectWallet);
   terminalSendBtn.addEventListener('click', handleUserInput);
   terminalInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') handleUserInput();
   });
 
-  // Initialization
   renderSaviors();
   renderJournal();
   if (typeof setupFarcasterSwap === 'function') {
@@ -951,7 +943,7 @@ function getEthereumProviderSync() {
 
 
 /* ==========================================================================
-   FARCASTER IN-APP SWAP IMPLEMENTATION (Farcaster only; browser keeps link)
+   FARCASTER IN-APP SWAP IMPLEMENTATION (Warplings-style native swapToken)
    ========================================================================== */
 let isInsideFarcaster = false;
 let cachedSwapQuote = null;
@@ -971,14 +963,30 @@ function setupFarcasterSwap() {
 
   window.openFcSwapModal = openFcSwapModal;
 
-  // Intercept click: In Farcaster, open in-app swap modal.
+  // Intercept click: In Farcaster, call sdk.actions.swapToken directly (Warplings pattern)
   // In normal browser, let normal <a> link navigation to swap.bankr.bot happen!
-  function handleBuyClick(e) {
+  async function handleBuyClick(e) {
     if (isFarcasterEnv()) {
       if (e) {
         e.preventDefault();
         e.stopPropagation();
       }
+
+      const tokenAddress = (window.appConfig?.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
+      const caip19Token = `eip155:8453/erc20:${tokenAddress}`;
+
+      // 1. Primary: Native Warpcast in-app swap action (opens Warpcast native swap sheet)
+      if (farcasterSdk?.actions?.swapToken) {
+        try {
+          console.log('[Farcaster] Triggering sdk.actions.swapToken for', caip19Token);
+          await farcasterSdk.actions.swapToken({ buyToken: caip19Token });
+          return false;
+        } catch (swapErr) {
+          console.warn('[Farcaster] sdk.actions.swapToken error, falling back to modal:', swapErr);
+        }
+      }
+
+      // 2. Fallback to in-app custom modal if host does not support swapToken
       openFcSwapModal();
       return false;
     }
@@ -992,7 +1000,6 @@ function setupFarcasterSwap() {
     }
   });
 
-  // If already detected as Farcaster, prevent default link behavior on the element
   if (isFarcasterEnv()) {
     buyBtn.removeAttribute('href');
     buyBtn.removeAttribute('target');
@@ -1021,7 +1028,6 @@ function setupFarcasterSwap() {
     if (e.target === modal) closeFcSwapModal();
   });
 
-  // Handle amount presets
   presetPills.forEach(pill => {
     pill.addEventListener('click', () => {
       presetPills.forEach(p => p.classList.remove('active'));
@@ -1061,7 +1067,6 @@ function setupFarcasterSwap() {
 
     try {
       const tokenAddress = (window.appConfig?.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
-      const weiAmount = BigInt(Math.floor(ethVal * 1e18)).toString();
       const userAddr = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : '0x4b19ee2a3de2521a3adc901989944c209c0a60ea';
 
       const quoteUrl = `/api/swap/quote?eth=${ethVal}&user=${encodeURIComponent(userAddr)}`;
@@ -1077,8 +1082,6 @@ function setupFarcasterSwap() {
       const formattedTokens = (Number(rawTokens / 1000000000000000000n)).toLocaleString('en-US');
       outputEl.textContent = `~${formattedTokens} $TTL`;
 
-      // Fee is 0.665% on Base DEX volume
-      // 1 ETH ~ $2780 => $1 volume fee = +10 mins
       const ethPrice = 2780;
       const volUsd = ethVal * ethPrice;
       const feeUsd = volUsd * 0.00665;
@@ -1101,17 +1104,24 @@ function setupFarcasterSwap() {
     }
   }
 
-  // Execute Swap via Farcaster EIP-1193 provider
   if (executeBtn) {
-    // Wraps provider.request so a silent, never-resolving RPC can't freeze the UI forever
-    function reqWithTimeout(provider, payload, ms, label) {
-      return Promise.race([
-        provider.request(payload),
-        new Promise((_, rej) => setTimeout(() => rej(new Error((label || payload.method) + ' timed out after ' + ms + 'ms')), ms))
-      ]);
-    }
-
     executeBtn.addEventListener('click', async () => {
+      const tokenAddress = (window.appConfig?.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
+      const caip19Token = `eip155:8453/erc20:${tokenAddress}`;
+
+      // 1. If host supports native swapToken, use it directly!
+      if (farcasterSdk?.actions?.swapToken) {
+        try {
+          appendLog('SYS', 'Launching native Warpcast swap interface...', 'sys', true);
+          await farcasterSdk.actions.swapToken({ buyToken: caip19Token });
+          closeFcSwapModal();
+          return;
+        } catch (actErr) {
+          console.warn('[Farcaster] Native swap action failed in modal, falling back to provider tx:', actErr);
+        }
+      }
+
+      // 2. Direct provider transaction fallback
       if (!cachedSwapQuote || !cachedSwapQuote.transactionRequest) {
         if (statusBox) {
           statusBox.className = 'swap-status-box error';
@@ -1154,9 +1164,6 @@ function setupFarcasterSwap() {
         const txReq = cachedSwapQuote.transactionRequest;
         const fromAddress = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : (txReq.from || undefined);
 
-        let txHash = null;
-
-        // Clean params for standard EIP-1193 eth_sendTransaction (no illegal chainId inside tx object)
         const cleanTx = {
           to: txReq.to,
           value: txReq.value,
@@ -1165,28 +1172,10 @@ function setupFarcasterSwap() {
         if (fromAddress) cleanTx.from = fromAddress;
         if (txReq.gasLimit) cleanTx.gas = txReq.gasLimit;
 
-        // 1. Primary: standard eth_sendTransaction (Warpcast pops the native single transaction confirm card)
-        try {
-          txHash = await reqWithTimeout(provider, {
-            method: 'eth_sendTransaction',
-            params: [cleanTx]
-          }, 60000, 'eth_sendTransaction');
-        } catch (sendTxErr) {
-          console.warn('eth_sendTransaction failed, trying wallet_sendCalls fallback:', sendTxErr && sendTxErr.message);
-
-          // 2. Fallback: EIP-5792 wallet_sendCalls
-          const callResult = await reqWithTimeout(provider, {
-            method: 'wallet_sendCalls',
-            params: [{
-              version: '1.0',
-              chainId: '0x2105',
-              from: fromAddress,
-              calls: [{ to: txReq.to, value: txReq.value, data: txReq.data }]
-            }]
-          }, 30000, 'wallet_sendCalls');
-
-          txHash = (callResult && typeof callResult === 'object') ? (callResult.id || callResult.bundleId) : callResult;
-        }
+        const txHash = await provider.request({
+          method: 'eth_sendTransaction',
+          params: [cleanTx]
+        });
 
         console.log('Swap tx broadcast:', txHash);
         const shortId = (typeof txHash === 'string' && txHash.length > 18) ? (txHash.slice(0, 10) + '...' + txHash.slice(-8)) : String(txHash);
@@ -1219,7 +1208,6 @@ function setupFarcasterSwap() {
   }
 }
 
-// Auto-run setupFarcasterSwap immediately and on DOM load
 if (typeof setupFarcasterSwap === 'function') {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', setupFarcasterSwap);
