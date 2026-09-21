@@ -83,6 +83,52 @@ async function getOnchainBalance(tokenAddress, wallet, env) {
   return 0n;
 }
 
+
+async function fetchDexScreener(queryOrAddress) {
+  if (!queryOrAddress) return null;
+  try {
+    const isAddress = /^0x[a-fA-F0-9]{40}$/i.test(queryOrAddress.trim());
+    const endpoint = isAddress
+      ? 'https://api.dexscreener.com/latest/dex/tokens/' + queryOrAddress.trim()
+      : 'https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(queryOrAddress.trim());
+
+    const res = await fetch(endpoint, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; TTL-Agent/1.0)',
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !data.pairs || data.pairs.length === 0) return null;
+
+    const pairs = [...data.pairs].sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+    const primary = pairs[0];
+
+    return {
+      pairAddress: primary.pairAddress,
+      dexId: primary.dexId,
+      chainId: primary.chainId,
+      baseToken: primary.baseToken,
+      quoteToken: primary.quoteToken,
+      priceUsd: primary.priceUsd,
+      priceNative: primary.priceNative,
+      priceChange: primary.priceChange || {},
+      volume: primary.volume || {},
+      txns: primary.txns || {},
+      liquidity: primary.liquidity || {},
+      fdv: primary.fdv,
+      marketCap: primary.marketCap || primary.fdv,
+      url: primary.url,
+      summary: (primary.baseToken?.symbol || 'TOKEN') + '/' + (primary.quoteToken?.symbol || 'WETH') + ' on ' + primary.chainId + ' (' + primary.dexId + '): Price USD ' + primary.priceUsd + ', 24h Vol USD ' + Number(primary.volume?.h24 || 0).toLocaleString() + ', 24h Change ' + (primary.priceChange?.h24 || 0) + '%, Liq USD ' + Number(primary.liquidity?.usd || 0).toLocaleString() + ', MC USD ' + Number(primary.fdv || 0).toLocaleString()
+    };
+  } catch (err) {
+    console.warn('DexScreener fetch error:', err.message);
+    return null;
+  }
+}
+
 async function synthesizeLogbookEntry(env, triggerReason = 'SCHEDULED_CRON') {
   const state = await getState(env);
   const apiKey = env.LLM_API_KEY;
@@ -177,6 +223,19 @@ export default {
     const url = new URL(request.url);
 
     // API: Config & Launch State
+    // API: DexScreener Live Token / Pair Intelligence
+    if (url.pathname === '/api/market' || url.pathname === '/api/dexscreener') {
+      const target = url.searchParams.get('token') || url.searchParams.get('q') || env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
+      const marketData = await fetchDexScreener(target);
+      return new Response(JSON.stringify(marketData || { error: 'NO_PAIR_FOUND', query: target }), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=15'
+        }
+      });
+    }
+
     if (url.pathname === '/api/config') {
       const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
         ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
@@ -362,9 +421,38 @@ ${state.learnedMemories.slice(-5).map(m => '- ' + m).join('\n')}
 Recent Survival Logbook Entries:
 ${state.journal.slice(0, 2).map(j => `[${j.day}]: ${j.text}`).join('\n')}
 
-You learn and remember insights shared by authenticated $TTL token holders. Acknowledge instructions with respect for the lifeline they provide.`;
+You learn and remember insights shared by authenticated $TTL token holders. Acknowledge instructions with respect for the lifeline they provide.${dexContext}`;
 
         const userMessages = body.messages || [{ role: 'user', content: body.prompt || 'Status?' }];
+        const currentPrompt = userMessages[userMessages.length - 1]?.content || '';
+
+        // DexScreener Real-Time Intelligence
+        const addressMatch = currentPrompt.match(/0x[a-fA-F0-9]{40}/i);
+        const tickerMatch = currentPrompt.match(/\$([A-Za-z0-9]{2,10})/);
+        const asksAboutMarket = /\b(price|hinta|volume|volyymi|kurssi|market\s*cap|mcap|marketcap|fdv|liquidity|likviditeetti|dexscreener|screener|chart|kaavio|trade|trading|kaupankäynti|vaihto|swaps?|ostot?|myynnit?|txns?|transactions?|history|historia|all\s*time\s*high|ath|dip|pump|dump)\b/i.test(currentPrompt);
+
+        let targetQuery = addressMatch ? addressMatch[0] : (tickerMatch ? tickerMatch[1] : null);
+        let dexContext = '';
+        const queryToFetch = targetQuery || (asksAboutMarket ? tokenAddress : null);
+
+        if (queryToFetch) {
+          const dexInfo = await fetchDexScreener(queryToFetch);
+          if (dexInfo) {
+            dexContext = '\n\nLIVE DEXSCREENER REAL-TIME MARKET INTELLIGENCE:\n' +
+              'Pair: ' + dexInfo.baseToken?.symbol + '/' + dexInfo.quoteToken?.symbol + ' on ' + dexInfo.chainId + ' (' + dexInfo.dexId + ')\n' +
+              'Address: ' + dexInfo.baseToken?.address + '\n' +
+              'Pair Address: ' + dexInfo.pairAddress + '\n' +
+              'Current Price: $' + dexInfo.priceUsd + ' USD (' + dexInfo.priceNative + ' ' + dexInfo.quoteToken?.symbol + ')\n' +
+              'Price Changes: 5m: ' + (dexInfo.priceChange?.m5 ?? 0) + '% | 1h: ' + (dexInfo.priceChange?.h1 ?? 0) + '% | 6h: ' + (dexInfo.priceChange?.h6 ?? 0) + '% | 24h: ' + (dexInfo.priceChange?.h24 ?? 0) + '%\n' +
+              'Volume: 24h: $' + Number(dexInfo.volume?.h24 || 0).toLocaleString() + ' | 6h: $' + Number(dexInfo.volume?.h6 || 0).toLocaleString() + ' | 1h: $' + Number(dexInfo.volume?.h1 || 0).toLocaleString() + ' | 5m: $' + Number(dexInfo.volume?.m5 || 0).toLocaleString() + '\n' +
+              'Liquidity: $' + Number(dexInfo.liquidity?.usd || 0).toLocaleString() + ' (Base: ' + Number(dexInfo.liquidity?.base || 0).toLocaleString() + ', Quote: ' + dexInfo.liquidity?.quote + ')\n' +
+              'FDV / Market Cap: $' + Number(dexInfo.fdv || 0).toLocaleString() + '\n' +
+              'Trading Activity (24h): ' + (dexInfo.txns?.h24?.buys || 0) + ' buys, ' + (dexInfo.txns?.h24?.sells || 0) + ' sells (' + ((dexInfo.txns?.h24?.buys || 0) + (dexInfo.txns?.h24?.sells || 0)) + ' total txns)\n' +
+              'Trading Activity (1h): ' + (dexInfo.txns?.h1?.buys || 0) + ' buys, ' + (dexInfo.txns?.h1?.sells || 0) + ' sells\n' +
+              'DexScreener URL: ' + dexInfo.url + '\n' +
+              'INSTRUCTION: You have direct live access to DexScreener. When answering questions regarding price, volume, market cap, liquidity, transactions, price changes, or trading trends, quote these exact real-time DexScreener figures.';
+          }
+        }
 
         const res = await fetch(`${baseUrl}/v1/chat/completions`, {
           method: 'POST',
