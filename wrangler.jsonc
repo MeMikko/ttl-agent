@@ -10,7 +10,7 @@
     "IS_LAUNCHED": "true",
     "TOKEN_ADDRESS": "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3",
     "LLM_BASE_URL": "https://llm.bankr.bot",
-    "LLM_MODEL": "gemini-2.0-flash",
+    "LLM_MODEL": "gemini-3.8-flash",
     "MIN_CHAT_TOKENS": "10000000"
   }
 }
