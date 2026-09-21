@@ -13,8 +13,8 @@ export async function onRequestGet(context) {
     launchTimestamp,
     initialHours,
     serverTime: Date.now(),
-    totalFeesUsd: 43.00,
-    rawWethFees: 0.03145
+    totalFeesUsd: 44.13,
+    rawWethFees: 0.016044
   }), {
     headers: {
       'Content-Type': 'application/json',
