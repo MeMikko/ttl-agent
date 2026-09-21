@@ -548,7 +548,7 @@ export default {
     }
 
     
-    // Swap Quote Proxy for Farcaster In-App DEX swap (KyberSwap primary, LiFi fallback)
+    // Swap Quote Proxy for Farcaster In-App DEX swap using official Bankr Swap API
     if (url.pathname === '/api/swap/quote') {
       try {
         const eth = parseFloat((url.searchParams.get('eth') || '0').replace(',', '.'));
@@ -563,71 +563,44 @@ export default {
         }
 
         const weiAmount = BigInt(Math.floor(eth * 1e18)).toString();
-        let kyberStatusText = ''; let buildStatusText = ''; let kErrText = ''; let lifiStatusText = '';
 
-        // 1. Primary: KyberSwap Aggregator (fast, open Base API, no strict 429 rate limit)
-        try {
-          kyberStatusText = 'fetching';
-          const kyberRouteRes = await fetch(`https://aggregator-api.kyberswap.com/base/api/v1/routes?tokenIn=0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE&tokenOut=${tokenAddress}&amountIn=${weiAmount}`, {
-            headers: { 'Accept': 'application/json', 'x-client-id': 'ttl-terminal' }
-          });
-          kyberStatusText = kyberRouteRes.status + ' ' + await kyberRouteRes.clone().text();
-          if (kyberRouteRes.ok) {
-            const rData = await kyberRouteRes.json();
-            if (rData.code === 0 && rData.data?.routeSummary) {
-              const buildRes = await fetch('https://aggregator-api.kyberswap.com/base/api/v1/route/build', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-client-id': 'ttl-terminal' },
-                body: JSON.stringify({
-                  routeSummary: rData.data.routeSummary,
-                  sender: user,
-                  recipient: user,
-                  slippageTolerance: 100 // 1%
-                })
-              });
-              if (buildRes.ok) {
-                const bData = await buildRes.json();
-                if (bData.code === 0 && bData.data?.data) {
-                  return new Response(JSON.stringify({
-                    estimate: {
-                      toAmount: bData.data.amountOut,
-                      toAmountMin: bData.data.amountOut
-                    },
-                    transactionRequest: {
-                      to: bData.data.routerAddress,
-                      data: bData.data.data,
-                      value: '0x' + BigInt(bData.data.amountIn || weiAmount).toString(16),
-                      gasLimit: '0x100000',
-                      from: user
-                    }
-                  }), {
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Access-Control-Allow-Origin': '*',
-                      'Cache-Control': 'no-store'
-                    }
-                  });
-                }
-              }
+        const bankrRes = await fetch('https://api.bankr.bot/bankr-swap/swap/quote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chainId: 8453,
+            sellToken: '0x0000000000000000000000000000000000000000',
+            buyToken: tokenAddress,
+            sellAmount: weiAmount,
+            taker: user
+          })
+        });
+
+        if (bankrRes.ok) {
+          const bQuote = await bankrRes.json();
+          return new Response(JSON.stringify({
+            estimate: {
+              toAmount: bQuote.buyAmount,
+              toAmountMin: bQuote.minBuyAmount || bQuote.buyAmount
+            },
+            transactionRequest: {
+              to: bQuote.transaction?.to,
+              data: bQuote.transaction?.data,
+              value: bQuote.transaction?.value || ('0x' + BigInt(weiAmount).toString(16)),
+              gasLimit: bQuote.transaction?.gas || '0x100000',
+              from: user
             }
-          }
-        } catch (kErr) {
-          kErrText = kErr.message;
-          console.warn('KyberSwap quote failed:', kErr.message);
-        }
-
-        // 2. Fallback: Li.Fi
-        const lifiUrl = `https://li.quest/v1/quote?fromChain=8453&toChain=8453&fromToken=0x0000000000000000000000000000000000000000&toToken=${tokenAddress}&fromAmount=${weiAmount}&fromAddress=${user}&slippage=0.03`;
-        const lifiRes = await fetch(lifiUrl, { headers: { 'Accept': 'application/json' } });
-        lifiStatusText = lifiRes.status + ' ' + await lifiRes.clone().text();
-        if (lifiRes.ok) {
-          const quoteData = await lifiRes.json();
-          return new Response(JSON.stringify(quoteData), {
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }
+          }), {
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*',
+              'Cache-Control': 'no-store'
+            }
           });
         }
 
-        return new Response(JSON.stringify({ error: 'ALL_ROUTES_UNAVAILABLE', debug: { kyberStatus: kyberStatusText, buildStatus: buildStatusText, kErr: kErrText, lifiStatus: lifiStatusText } }), {
+        const errTxt = await bankrRes.text();
+        return new Response(JSON.stringify({ error: 'BANKR_SWAP_FAILED', status: bankrRes.status, details: errTxt }), {
           status: 502,
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
