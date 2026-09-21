@@ -195,9 +195,9 @@
     <section class="journal-section">
       <div class="panel-header">
         <h3 class="panel-title">📜 EXISTENTIAL LOGBOOK</h3>
-        <span class="panel-subtitle">Immutable daily entries of survival, market observations, and near-death records</span>
+        <span class="panel-subtitle">Hourly records of survival, market observations, and near-death records. Click an entry to view full log.</span>
       </div>
-      <div class="journal-entries" id="journal-entries">
+      <div class="journal-list" id="journal-entries">
         <!-- Injected via JavaScript -->
       </div>
     </section>
@@ -246,5 +246,21 @@
   </footer>
 
   <script src="app.js"></script>
+
+  <!-- Existential Logbook Modal Popup -->
+  <div class="modal-backdrop" id="journal-modal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-badge" id="modal-badge">EPOCH 1 // LOG 1</span>
+          <span class="modal-time" id="modal-time">TIMESTAMP</span>
+        </div>
+        <button class="modal-close-btn" id="modal-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
 </body>
 </html>
