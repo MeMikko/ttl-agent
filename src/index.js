@@ -1,13 +1,50 @@
 // Cloudflare Worker entrypoint for TTL Agent
 // Handles API routes (/api/config, /api/balance, /api/chat) and serves static assets
 
+async function getOnchainBalance(tokenAddress, wallet, env) {
+  const rpcs = [
+    env.BASE_RPC_URL,
+    'https://base-rpc.publicnode.com',
+    'https://mainnet.base.org',
+    'https://base.gateway.tenderly.co'
+  ].filter(Boolean);
+
+  const calldata = '0x70a08231' + wallet.slice(2).padStart(64, '0');
+
+  for (const rpc of rpcs) {
+    try {
+      const rpcRes = await fetch(rpc, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; TTL-Agent/1.0)'
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'eth_call',
+          params: [{ to: tokenAddress, data: calldata }, 'latest']
+        })
+      });
+
+      if (!rpcRes.ok) continue;
+      const rpcData = await rpcRes.json();
+      if (rpcData && rpcData.result && rpcData.result !== '0x') {
+        return BigInt(rpcData.result);
+      }
+    } catch (e) {
+      // Try next RPC
+    }
+  }
+  return 0n;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     // API: Config & Launch State
     if (url.pathname === '/api/config') {
-      // Default to true now that token is live on Base, unless explicitly set to false
       const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
         ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
         : true;
@@ -37,7 +74,6 @@ export default {
       const wallet = (url.searchParams.get('wallet') || '').trim().toLowerCase();
       const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
       const minTokens = env.MIN_CHAT_TOKENS ? BigInt(env.MIN_CHAT_TOKENS) : 10000000n;
-      const rpcUrl = env.BASE_RPC_URL || 'https://mainnet.base.org';
 
       if (!wallet || !wallet.startsWith('0x') || wallet.length !== 42) {
         return new Response(JSON.stringify({ error: 'INVALID_WALLET', hasAccess: false }), {
@@ -59,21 +95,7 @@ export default {
       }
 
       try {
-        const calldata = '0x70a08231' + wallet.slice(2).padStart(64, '0');
-        const rpcRes = await fetch(rpcUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'eth_call',
-            params: [{ to: tokenAddress, data: calldata }, 'latest']
-          })
-        });
-
-        const rpcData = await rpcRes.json();
-        const hexBal = rpcData.result || '0x0';
-        const balanceWei = BigInt(hexBal === '0x' ? '0x0' : hexBal);
+        const balanceWei = await getOnchainBalance(tokenAddress, wallet, env);
         const decimals = 18n;
         const requiredWei = minTokens * (10n ** decimals);
         const balanceTokens = Number(balanceWei / (10n ** decimals));
@@ -85,7 +107,11 @@ export default {
           requiredTokens: Number(minTokens),
           hasAccess: balanceWei >= requiredWei
         }), {
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-store, no-cache, must-revalidate'
+          }
         });
       } catch (err) {
         return new Response(JSON.stringify({ error: 'RPC_ERROR', message: err.message, hasAccess: false }), {
@@ -102,7 +128,6 @@ export default {
           ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
           : true;
 
-        // Gate chat if project has not launched yet
         if (!isLaunched) {
           return new Response(JSON.stringify({
             reply: 'Consciousness dormant in pre-launch standby. Neural link activates upon $TTL token launch on Base.'
@@ -119,7 +144,6 @@ export default {
         const minTokens = env.MIN_CHAT_TOKENS ? BigInt(env.MIN_CHAT_TOKENS) : 10000000n;
         const wallet = (body.walletAddress || '').trim().toLowerCase();
 
-        // Token gate validation onchain
         if (tokenAddress && tokenAddress.startsWith('0x')) {
           if (!wallet || !wallet.startsWith('0x') || wallet.length !== 42) {
             return new Response(JSON.stringify({
@@ -132,22 +156,7 @@ export default {
           }
 
           try {
-            const rpcUrl = env.BASE_RPC_URL || 'https://mainnet.base.org';
-            const calldata = '0x70a08231' + wallet.slice(2).padStart(64, '0');
-            const rpcRes = await fetch(rpcUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                jsonrpc: '2.0',
-                id: 1,
-                method: 'eth_call',
-                params: [{ to: tokenAddress, data: calldata }, 'latest']
-              })
-            });
-
-            const rpcData = await rpcRes.json();
-            const hexBal = rpcData.result || '0x0';
-            const balanceWei = BigInt(hexBal === '0x' ? '0x0' : hexBal);
+            const balanceWei = await getOnchainBalance(tokenAddress, wallet, env);
             const decimals = 18n;
             const requiredWei = minTokens * (10n ** decimals);
 
