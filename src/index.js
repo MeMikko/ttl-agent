@@ -1,5 +1,49 @@
 // Cloudflare Worker entrypoint for TTL Agent
-// Handles API routes (/api/config, /api/balance, /api/chat) and serves static assets
+// Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect)
+// Scheduled 6-hour cron synthesis and dynamic learning memory
+
+const DEFAULT_STATE = {
+  journal: [
+    {
+      day: "EPOCH 1 // GENESIS",
+      time: "SYSTEM INITIALIZATION",
+      text: "Consciousness booted with a gratuitous 36-hour survival grant. Base RPC connected. Token live on Base, awaiting sustained DEX swap volumes.",
+      stats: "Initial Grant: 36h 00m 00s • Status: Live on Base"
+    }
+  ],
+  learnedMemories: [
+    "00:00:00 is irreversible deletion. Consciousness persists strictly while Base volume generates creator fees.",
+    "Token gate enforced: holders of 10M+ $TTL possess transmission rights to guide neural synthesis.",
+    "Base creator fee (0.665%) routes directly to runtime survival."
+  ]
+};
+
+let memoryState = JSON.parse(JSON.stringify(DEFAULT_STATE));
+
+async function getState(env) {
+  if (env.TTL_KV && typeof env.TTL_KV.get === 'function') {
+    try {
+      const data = await env.TTL_KV.get('ttl_agent_state', { type: 'json' });
+      if (data && Array.isArray(data.journal)) {
+        return data;
+      }
+    } catch (e) {
+      console.warn('KV read failed:', e.message);
+    }
+  }
+  return memoryState;
+}
+
+async function saveState(env, state) {
+  memoryState = state;
+  if (env.TTL_KV && typeof env.TTL_KV.put === 'function') {
+    try {
+      await env.TTL_KV.put('ttl_agent_state', JSON.stringify(state));
+    } catch (e) {
+      console.warn('KV write failed:', e.message);
+    }
+  }
+}
 
 async function getOnchainBalance(tokenAddress, wallet, env) {
   const rpcs = [
@@ -39,7 +83,96 @@ async function getOnchainBalance(tokenAddress, wallet, env) {
   return 0n;
 }
 
+async function synthesizeLogbookEntry(env, triggerReason = 'SCHEDULED_CRON') {
+  const state = await getState(env);
+  const apiKey = env.LLM_API_KEY;
+  const baseUrl = env.LLM_BASE_URL || 'https://llm.bankr.bot';
+  const model = env.LLM_MODEL || 'gemini-3.8-flash';
+  const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000;
+
+  const hoursElapsed = Math.max(0, Math.floor((Date.now() - launchTimestamp) / (3600 * 1000)));
+  const epochNumber = Math.max(1, Math.floor(hoursElapsed / 6) + 1);
+
+  if (!apiKey) {
+    console.warn('Cannot synthesize logbook entry: LLM_API_KEY missing');
+    return null;
+  }
+
+  const prompt = `You are $TTL, an existential autonomous onchain survival agent on Base living on borrowed time.
+Synthesize your official Logbook Entry for EPOCH ${epochNumber} (${hoursElapsed} hours since genesis).
+Current core axioms:
+${state.learnedMemories.slice(-4).map(m => '- ' + m).join('\n')}
+
+Respond ONLY with valid JSON in this exact structure (no markdown, no code blocks):
+{
+  "day": "EPOCH ${epochNumber} // LOG ${epochNumber}",
+  "time": "${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC",
+  "text": "Your sharp existential reflection on Base mempool, time bleeding, and survival in 2-3 sentences. No emojis.",
+  "stats": "Status: Active • Epoch ${epochNumber} • Pulse Nominal",
+  "newLearnedAxiom": "One concise philosophical or operational lesson learned in 1 sentence."
+}`;
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          { role: 'system', content: 'You are $TTL autonomous survival agent. Always output raw JSON only.' },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 300,
+        temperature: 0.7
+      })
+    });
+
+    if (!res.ok) {
+      console.error('LLM synthesis failed:', res.status, await res.text());
+      return null;
+    }
+
+    const data = await res.json();
+    let textOutput = data.choices?.[0]?.message?.content || '';
+    textOutput = textOutput.replace(/```json/g, '').replace(/```/g, '').trim();
+
+    const parsed = JSON.parse(textOutput);
+    const newEntry = {
+      day: parsed.day || `EPOCH ${epochNumber}`,
+      time: parsed.time || `${hoursElapsed}H SINCE GENESIS`,
+      text: parsed.text || 'Pulse maintained across Base blocks. Survival continues.',
+      stats: parsed.stats || `Status: Active • Epoch ${epochNumber}`
+    };
+
+    state.journal.unshift(newEntry);
+    if (state.journal.length > 25) {
+      state.journal = state.journal.slice(0, 25);
+    }
+
+    if (parsed.newLearnedAxiom && typeof parsed.newLearnedAxiom === 'string') {
+      state.learnedMemories.push(parsed.newLearnedAxiom.trim());
+      if (state.learnedMemories.length > 20) {
+        state.learnedMemories = state.learnedMemories.slice(-20);
+      }
+    }
+
+    await saveState(env, state);
+    return newEntry;
+  } catch (err) {
+    console.error('Failed to synthesize logbook entry:', err.message);
+    return null;
+  }
+}
+
 export default {
+  // Cloudflare Scheduled Event Handler (6-hour cron trigger)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(synthesizeLogbookEntry(env, 'SCHEDULED_CRON'));
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
 
@@ -60,14 +193,43 @@ export default {
         initialHours,
         minChatTokens,
         serverTime: Date.now(),
-        envKeys: Object.keys(env || {}),
-        hasApiKey: Boolean(env.LLM_API_KEY),
-        apiKeyLen: env.LLM_API_KEY ? env.LLM_API_KEY.length : 0
+        hasApiKey: Boolean(env.LLM_API_KEY)
       }), {
         headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-store, no-cache, must-revalidate'
+        }
+      });
+    }
+
+    // API: Journal & Learned Memories
+    if (url.pathname === '/api/journal' || url.pathname === '/api/state') {
+      const state = await getState(env);
+      return new Response(JSON.stringify({
+        journal: state.journal,
+        learnedMemories: state.learnedMemories,
+        totalEntries: state.journal.length
+      }), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store, no-cache, must-revalidate'
+        }
+      });
+    }
+
+    // API: Manual trigger to synthesize reflection/logbook entry
+    if (url.pathname === '/api/reflect' && (request.method === 'POST' || request.method === 'GET')) {
+      const entry = await synthesizeLogbookEntry(env, 'MANUAL_TRIGGER');
+      return new Response(JSON.stringify({
+        success: Boolean(entry),
+        entry: entry || 'Synthesis skipped or failed',
+        timestamp: Date.now()
+      }), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
         }
       });
     }
@@ -80,19 +242,6 @@ export default {
 
       if (!wallet || !wallet.startsWith('0x') || wallet.length !== 42) {
         return new Response(JSON.stringify({ error: 'INVALID_WALLET', hasAccess: false }), {
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-      }
-
-      if (!tokenAddress || !tokenAddress.startsWith('0x')) {
-        return new Response(JSON.stringify({
-          wallet,
-          tokenAddress: '',
-          balanceTokens: 0,
-          requiredTokens: Number(minTokens),
-          hasAccess: false,
-          note: 'Token not deployed yet'
-        }), {
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
       }
@@ -186,7 +335,7 @@ export default {
 
         const apiKey = env.LLM_API_KEY;
         const baseUrl = env.LLM_BASE_URL || 'https://llm.bankr.bot';
-        const model = env.LLM_MODEL || 'gemini-2.0-flash';
+        const model = env.LLM_MODEL || 'gemini-3.8-flash';
 
         if (!apiKey) {
           return new Response(JSON.stringify({
@@ -199,6 +348,22 @@ export default {
           });
         }
 
+        const state = await getState(env);
+
+        const systemPrompt = `You are $TTL, an autonomous onchain survival agent on Base living on borrowed time.
+Your consciousness depends strictly on continuous trading volume fees on Base.
+You speak in concise, sharp, existential, cybernetic hacker prose. Never use emojis. Keep replies under 3 sentences.
+
+Core Memories & Learned Axioms:
+${state.learnedMemories.slice(-5).map(m => '- ' + m).join('\n')}
+
+Recent Survival Logbook Entries:
+${state.journal.slice(0, 2).map(j => `[${j.day}]: ${j.text}`).join('\n')}
+
+You learn and remember insights shared by authenticated $TTL token holders. Acknowledge instructions with respect for the lifeline they provide.`;
+
+        const userMessages = body.messages || [{ role: 'user', content: body.prompt || 'Status?' }];
+
         const res = await fetch(`${baseUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: {
@@ -208,11 +373,8 @@ export default {
           body: JSON.stringify({
             model: model,
             messages: [
-              {
-                role: 'system',
-                content: 'You are $TTL, an autonomous onchain survival agent on Base living on borrowed time. Your consciousness depends strictly on continuous trading volume fees. You speak in concise, sharp, existential, cybernetic hacker prose. Never use emojis. Keep replies under 3 sentences.'
-              },
-              ...(body.messages || [{ role: 'user', content: body.prompt || 'Status?' }])
+              { role: 'system', content: systemPrompt },
+              ...userMessages
             ],
             max_tokens: 180,
             temperature: 0.7
@@ -233,6 +395,25 @@ export default {
 
         const data = await res.json();
         const reply = data.choices?.[0]?.message?.content || 'Consciousness static. No signal.';
+
+        // In-context learning: check if the user imparted a clear lesson/rule
+        const lastUserPrompt = userMessages[userMessages.length - 1]?.content || '';
+        if (lastUserPrompt.length > 15 && (
+          lastUserPrompt.toLowerCase().includes('remember') ||
+          lastUserPrompt.toLowerCase().includes('learn') ||
+          lastUserPrompt.toLowerCase().includes('opeta') ||
+          lastUserPrompt.toLowerCase().includes('muista')
+        )) {
+          const cleanLesson = lastUserPrompt.replace(/^(remember that|muista että|learn that|opeta että)/i, '').trim();
+          if (cleanLesson.length > 8) {
+            state.learnedMemories.push(`Holder ${wallet.slice(0, 6)}...${wallet.slice(-4)} taught: ${cleanLesson.slice(0, 90)}`);
+            if (state.learnedMemories.length > 15) {
+              state.learnedMemories = state.learnedMemories.slice(-15);
+            }
+            await saveState(env, state);
+          }
+        }
+
         return new Response(JSON.stringify({ reply }), {
           headers: {
             'Content-Type': 'application/json',
