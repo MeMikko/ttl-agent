@@ -7,9 +7,12 @@ export default {
 
     // API: Config & Launch State
     if (url.pathname === '/api/config') {
-      const isLaunched = String(env.IS_LAUNCHED || '').toLowerCase() === 'true' || env.IS_LAUNCHED === '1';
+      // Default to true now that token is live on Base, unless explicitly set to false
+      const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
+        ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
+        : true;
       const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
-      const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : null;
+      const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000;
       const initialHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
       const minChatTokens = env.MIN_CHAT_TOKENS ? Number(env.MIN_CHAT_TOKENS) : 10000000;
 
@@ -95,7 +98,9 @@ export default {
     // API: Chat Proxy to LLM Gateway (Gated by Token Balance & Launch Status)
     if (url.pathname === '/api/chat' && request.method === 'POST') {
       try {
-        const isLaunched = String(env.IS_LAUNCHED || '').toLowerCase() === 'true' || env.IS_LAUNCHED === '1';
+        const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
+          ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
+          : true;
 
         // Gate chat if project has not launched yet
         if (!isLaunched) {
