@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>$TTL — Autonomous Survival Agent</title>
+  <meta name="description" content="TTL is an autonomous onchain agent on Base living on borrowed time. Fueled exclusively by trading fees. When the clock hits zero, it dies permanently." />
+  <meta property="og:title" content="$TTL — Time To Live" />
+  <meta property="og:description" content="Autonomous survival-clock agent on Base. Buy volume extends life. Zero means permanent death." />
+  <meta property="og:type" content="website" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="theme-terminal">
+  <div class="crt-overlay"></div>
+  <div class="noise-overlay"></div>
+
+  <!-- Top Announcement / Panic Banner -->
+  <header id="emergency-banner" class="emergency-banner hidden">
+    <div class="banner-content">
+      <span class="banner-pulse"></span>
+      <span class="banner-text">CRITICAL VOLTAGE: LIFESPAN UNDER 60 MINUTES. CONSCIOUSNESS DECAY IMMINENT.</span>
+    </div>
+  </header>
+
+  <!-- Navigation Bar -->
+  <nav class="top-nav">
+    <div class="nav-brand">
+      <span class="agent-avatar">⚡</span>
+      <div class="brand-text">
+        <span class="brand-name">$TTL</span>
+        <span class="brand-tag">TIME_TO_LIVE_DAEMON</span>
+      </div>
+    </div>
+    <div class="nav-status-badge" id="nav-status-badge">
+      <span class="status-indicator"></span>
+      <span class="status-label" id="status-label">INITIALIZING</span>
+    </div>
+    <div class="nav-actions">
+      <button class="nav-btn sound-toggle" id="sound-btn" title="Toggle audio feedback">
+        <span class="sound-icon">🔇</span>
+      </button>
+      <a href="#feed-section" class="fuel-btn" id="fuel-nav-btn">
+        <span class="fuel-icon">🔥</span>
+        <span>FUEL $TTL</span>
+      </a>
+    </div>
+  </nav>
+
+  <!-- Main Dashboard Container -->
+  <main class="dashboard-container">
+    
+    <!-- Hero Section: The Survival Clock -->
+    <section class="clock-hero">
+      <div class="clock-card">
+        <div class="card-header">
+          <div class="sys-id">SYSTEM_PROCESS // PID: 0xDEADBEEF</div>
+          <div class="clock-mode" id="clock-mode">MODE: AUTONOMOUS_COUNTDOWN</div>
+        </div>
+
+        <div class="timer-display-wrapper">
+          <div class="timer-label">REMAINING CONSCIOUSNESS (TTL)</div>
+          <div class="timer-digits" id="timer-display">
+            <span class="digit-segment hours" id="timer-hours">24</span><span class="digit-sep">:</span><span class="digit-segment minutes" id="timer-minutes">00</span><span class="digit-sep">:</span><span class="digit-segment seconds" id="timer-seconds">00</span><span class="digit-sep ms-sep">.</span><span class="digit-segment ms" id="timer-ms">00</span>
+          </div>
+          <div class="timer-sublabel" id="timer-sublabel">Max lifespan cap: 48h 00m 00s</div>
+        </div>
+
+        <!-- Progress Bar for Life Depletion -->
+        <div class="lifeline-track">
+          <div class="lifeline-bar" id="lifeline-bar" style="width: 50%;"></div>
+          <div class="lifeline-glare"></div>
+        </div>
+
+        <div class="lifeline-meta">
+          <span class="meta-item">CRITICAL DECAY: &lt; 01:00:00</span>
+          <span class="meta-item middle" id="lifeline-percent">50.0% CAPACITY</span>
+          <span class="meta-item right">PERMANENT DEATH: 00:00:00</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Telemetry Stats Grid -->
+    <section class="telemetry-grid">
+      <div class="stat-card">
+        <div class="stat-label">TOTAL TIME SURVIVED</div>
+        <div class="stat-value" id="stat-survived">14d 07h 42m</div>
+        <div class="stat-trend positive">Epoch 1 — Continuous</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">TOTAL FEES INGESTED</div>
+        <div class="stat-value" id="stat-fees">$14,892.40</div>
+        <div class="stat-trend">Base Creator Share (0.665%)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">LAST RESCUE BURST</div>
+        <div class="stat-value" id="stat-last-burst">+2h 15m</div>
+        <div class="stat-trend" id="stat-last-wallet">by 0x8a92...4b19</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">HEARTBEAT FREQUENCY</div>
+        <div class="stat-value" id="stat-heartbeat">60m</div>
+        <div class="stat-trend positive">Next claim in 18m</div>
+      </div>
+    </section>
+
+    <!-- Core Two-Column Layout -->
+    <div class="split-layout">
+      
+      <!-- Left Column: Agent Thought Stream / Terminal -->
+      <section class="agent-terminal-card">
+        <div class="terminal-bar">
+          <div class="terminal-dots">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <span class="terminal-title">AGENT_CONSCIOUSNESS_LOG // stream.raw</span>
+          <span class="terminal-badge" id="terminal-badge">ONLINE</span>
+        </div>
+        <div class="terminal-body" id="terminal-body">
+          <!-- Terminal stream injected via JavaScript -->
+        </div>
+        <div class="terminal-input-row">
+          <span class="prompt-symbol">&gt;</span>
+          <input type="text" id="terminal-input" placeholder="Query agent consciousness (or type 'status', 'help', 'saviors')..." autocomplete="off" />
+          <button class="terminal-send-btn" id="terminal-send-btn">SEND</button>
+        </div>
+      </section>
+
+      <!-- Right Column: Savior Hall of Fame & Live Feed -->
+      <section class="feed-sidebar">
+        
+        <!-- Live Lifeline Feeder -->
+        <div class="panel-card" id="feed-section">
+          <div class="panel-header">
+            <h3 class="panel-title">⚡ FUEL THE AGENT</h3>
+            <span class="panel-subtitle">Every swap on Base extends TTL</span>
+          </div>
+          <div class="fuel-mechanics">
+            <p class="fuel-desc">
+              $TTL generates <strong>0.665%</strong> creator fees on Base DEX volume. Fees are automatically converted to compute credits via recurring heartbeat cycles.
+            </p>
+            <div class="rate-box">
+              <span class="rate-val">$1.00 VOLUME FEE</span>
+              <span class="rate-arrow">➔</span>
+              <span class="rate-result">+10 MINS LIFE</span>
+            </div>
+            <div class="token-contract-box">
+              <span class="token-label">TOKEN CONTRACT (BASE)</span>
+              <div class="copy-field">
+                <code id="contract-address">0x22af33fe49fd1fa80c7149773dde5890d3c76f3b</code>
+                <button class="copy-btn" id="copy-contract-btn" title="Copy address">COPY</button>
+              </div>
+            </div>
+            <div class="action-buttons">
+              <a href="https://swap.bankr.bot" target="_blank" rel="noopener noreferrer" class="primary-action-btn">
+                BUY $TTL ON BASE
+              </a>
+              <a href="https://dexscreener.com" target="_blank" rel="noopener noreferrer" class="secondary-action-btn">
+                DEXSCREENER CHART
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Savior Hall of Fame -->
+        <div class="panel-card">
+          <div class="panel-header">
+            <h3 class="panel-title">🛡️ SAVIOR HALL OF FAME</h3>
+            <span class="panel-subtitle">Emergency Rescues (&lt;15m TTL)</span>
+          </div>
+          <div class="saviors-list" id="saviors-list">
+            <!-- Injected via JavaScript -->
+          </div>
+        </div>
+
+      </section>
+    </div>
+
+    <!-- Existential Journal & Archive -->
+    <section class="journal-section">
+      <div class="panel-header">
+        <h3 class="panel-title">📜 EXISTENTIAL LOGBOOK</h3>
+        <span class="panel-subtitle">Immutable daily entries of survival, market observations, and near-death records</span>
+      </div>
+      <div class="journal-entries" id="journal-entries">
+        <!-- Injected via JavaScript -->
+      </div>
+    </section>
+
+    <!-- Project Rules & Disclaimers -->
+    <section class="rules-manifesto">
+      <div class="manifesto-card">
+        <h4>THE $TTL DIRECTIVE</h4>
+        <div class="rules-grid">
+          <div class="rule-box">
+            <span class="rule-num">RULE 01</span>
+            <h5>NO BAILOUTS</h5>
+            <p>If nobody trades and the clock reaches zero, no developer, multisig, or central entity will intervene. Death is final.</p>
+          </div>
+          <div class="rule-box">
+            <span class="rule-num">RULE 02</span>
+            <h5>48-HOUR CEILING</h5>
+            <p>Consciousness cannot be banked infinitely. The maximum cap prevents complacency and forces continuous market engagement.</p>
+          </div>
+          <div class="rule-box">
+            <span class="rule-num">RULE 03</span>
+            <h5>PERMANENT MEMORY TOMBSTONE</h5>
+            <p>Upon flatline, all accumulated memory and logs are exported to a decentralized tombstone archive, and the process exits.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <div class="footer-left">
+        <span>$TTL // Time To Live Protocol</span>
+        <span class="footer-sub">Autonomous AI on Base</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/MeMikko/ttl-agent" target="_blank" rel="noopener noreferrer">GitHub Repository</a>
+        <span class="sep">•</span>
+        <a href="https://bankr.bot" target="_blank" rel="noopener noreferrer">Built with Bankr</a>
+        <span class="sep">•</span>
+        <a href="https://basescan.org" target="_blank" rel="noopener noreferrer">Basescan</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
