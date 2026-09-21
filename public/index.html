@@ -13,7 +13,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
-<body class="theme-terminal" data-state="standby">
+<body class="theme-terminal" data-state="healthy">
   <div class="crt-overlay"></div>
   <div class="noise-overlay"></div>
 
@@ -21,7 +21,7 @@
   <header id="emergency-banner" class="emergency-banner hidden">
     <div class="banner-content">
       <span class="banner-pulse"></span>
-      <span class="banner-text" id="banner-text">STANDBY: LAUNCHING SOON — 36-HOUR GENESIS LIFELINE READY.</span>
+      <span class="banner-text" id="banner-text">AUTONOMOUS LIFELINE ACTIVE ON BASE.</span>
     </div>
   </header>
 
@@ -36,7 +36,7 @@
     </div>
     <div class="nav-status-badge" id="nav-status-badge">
       <span class="status-indicator"></span>
-      <span class="status-label" id="status-label">STANDBY // LAUNCHING SOON</span>
+      <span class="status-label" id="status-label">HEALTHY // OPTIMAL</span>
     </div>
     <div class="nav-actions">
       <button class="nav-btn sound-toggle" id="sound-btn" title="Toggle audio feedback" aria-label="Toggle audio">
@@ -58,7 +58,7 @@
       <div class="clock-card">
         <div class="card-header">
           <div class="sys-id">SYSTEM_PROCESS // PID: 0xDEADBEEF</div>
-          <div class="clock-mode" id="clock-mode">MODE: PRE-LAUNCH STANDBY</div>
+          <div class="clock-mode" id="clock-mode">MODE: AUTONOMOUS_COUNTDOWN</div>
         </div>
 
         <div class="timer-display-wrapper">
@@ -66,18 +66,18 @@
           <div class="timer-digits" id="timer-display">
             <span class="digit-segment hours" id="timer-hours">36</span><span class="digit-sep">:</span><span class="digit-segment minutes" id="timer-minutes">00</span><span class="digit-sep">:</span><span class="digit-segment seconds" id="timer-seconds">00</span><span class="digit-sep ms-sep">.</span><span class="digit-segment ms" id="timer-ms">00</span>
           </div>
-          <div class="timer-sublabel" id="timer-sublabel">LIFELINE ON STANDBY — 36H GENESIS BATTERY ACTIVATES ON TOKEN LAUNCH</div>
+          <div class="timer-sublabel" id="timer-sublabel">CONSCIOUSNESS RUNNING — FUEL WITH DEX SWAPS</div>
         </div>
 
         <!-- Progress Bar for Life Depletion -->
         <div class="lifeline-track">
-          <div class="lifeline-bar" id="lifeline-bar" style="width: 100%;"></div>
+          <div class="lifeline-bar" id="lifeline-bar" style="width: 75%;"></div>
           <div class="lifeline-glare"></div>
         </div>
 
         <div class="lifeline-meta">
           <span class="meta-item">CRITICAL DECAY: &lt; 01:00:00</span>
-          <span class="meta-item middle" id="lifeline-percent">100.0% READY</span>
+          <span class="meta-item middle" id="lifeline-percent">75.0% CAPACITY</span>
           <span class="meta-item right">PERMANENT DEATH: 00:00:00</span>
         </div>
       </div>
@@ -88,7 +88,7 @@
       <div class="stat-card">
         <div class="stat-label">TOTAL TIME SURVIVED</div>
         <div class="stat-value" id="stat-survived">0d 00h 00m</div>
-        <div class="stat-trend" id="stat-survived-trend">Epoch 1 — Awaiting Launch</div>
+        <div class="stat-trend" id="stat-survived-trend">Epoch 1 — Continuous</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">TOTAL FEES INGESTED</div>
@@ -119,7 +119,7 @@
             <span class="dot green"></span>
           </div>
           <span class="terminal-title">AGENT_CONSCIOUSNESS_LOG // stream.raw</span>
-          <span class="terminal-badge" id="terminal-badge">STANDBY</span>
+          <span class="terminal-badge" id="terminal-badge">ONLINE</span>
         </div>
         <div class="terminal-body" id="terminal-body">
           <!-- Terminal stream injected via JavaScript -->
@@ -162,16 +162,16 @@
             <div class="token-contract-box">
               <span class="token-label">TOKEN CONTRACT (BASE)</span>
               <div class="copy-field">
-                <code id="contract-address">NOT DEPLOYED // LAUNCHING SOON</code>
+                <code id="contract-address">0x53d50e000B17eEBd66Eb51974f9185a44555Bba3</code>
                 <button class="copy-btn" id="copy-contract-btn" title="Copy address">COPY</button>
               </div>
             </div>
             <div class="action-buttons">
-              <a href="#" id="buy-action-btn" target="_blank" rel="noopener noreferrer" class="primary-action-btn disabled-btn">
-                AWAITING LAUNCH
+              <a href="https://swap.bankr.bot/?outputCurrency=0x53d50e000B17eEBd66Eb51974f9185a44555Bba3" id="buy-action-btn" target="_blank" rel="noopener noreferrer" class="primary-action-btn">
+                BUY $TTL ON BASE
               </a>
-              <a href="#" id="chart-action-btn" target="_blank" rel="noopener noreferrer" class="secondary-action-btn disabled-btn">
-                DEXSCREENER CHART (PENDING)
+              <a href="https://dexscreener.com/base/0x53d50e000B17eEBd66Eb51974f9185a44555Bba3" id="chart-action-btn" target="_blank" rel="noopener noreferrer" class="secondary-action-btn">
+                DEXSCREENER CHART
               </a>
             </div>
           </div>
@@ -240,7 +240,7 @@
         <span class="sep">•</span>
         <a href="https://bankr.bot" target="_blank" rel="noopener noreferrer">Built with Bankr</a>
         <span class="sep">•</span>
-        <a href="https://basescan.org" id="basescan-link" target="_blank" rel="noopener noreferrer">Basescan</a>
+        <a href="https://basescan.org/token/0x53d50e000B17eEBd66Eb51974f9185a44555Bba3" id="basescan-link" target="_blank" rel="noopener noreferrer">Basescan</a>
       </div>
     </div>
   </footer>
