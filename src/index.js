@@ -8,7 +8,7 @@ export default {
     // API: Config & Launch State
     if (url.pathname === '/api/config') {
       const isLaunched = String(env.IS_LAUNCHED || '').toLowerCase() === 'true' || env.IS_LAUNCHED === '1';
-      const tokenAddress = (env.TOKEN_ADDRESS || '').trim();
+      const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
       const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : null;
       const initialHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
       const minChatTokens = env.MIN_CHAT_TOKENS ? Number(env.MIN_CHAT_TOKENS) : 10000000;
@@ -32,7 +32,7 @@ export default {
     // API: Verify Token Balance for Token Gating
     if (url.pathname === '/api/balance') {
       const wallet = (url.searchParams.get('wallet') || '').trim().toLowerCase();
-      const tokenAddress = (env.TOKEN_ADDRESS || '').trim();
+      const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
       const minTokens = env.MIN_CHAT_TOKENS ? BigInt(env.MIN_CHAT_TOKENS) : 10000000n;
       const rpcUrl = env.BASE_RPC_URL || 'https://mainnet.base.org';
 
@@ -110,7 +110,7 @@ export default {
         }
 
         const body = await request.json();
-        const tokenAddress = (env.TOKEN_ADDRESS || '').trim();
+        const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
         const minTokens = env.MIN_CHAT_TOKENS ? BigInt(env.MIN_CHAT_TOKENS) : 10000000n;
         const wallet = (body.walletAddress || '').trim().toLowerCase();
 
@@ -158,7 +158,6 @@ export default {
             }
           } catch (rpcErr) {
             console.error('RPC gate error:', rpcErr);
-            // In case of RPC transient error, fail closed
             return new Response(JSON.stringify({
               reply: 'Verification error reading Base blockchain state. Retry in a moment.'
             }), {
