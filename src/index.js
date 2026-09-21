@@ -59,7 +59,10 @@ export default {
         launchTimestamp,
         initialHours,
         minChatTokens,
-        serverTime: Date.now()
+        serverTime: Date.now(),
+        envKeys: Object.keys(env || {}),
+        hasApiKey: Boolean(env.LLM_API_KEY),
+        apiKeyLen: env.LLM_API_KEY ? env.LLM_API_KEY.length : 0
       }), {
         headers: {
           'Content-Type': 'application/json',
