@@ -1,6 +1,6 @@
 // Cloudflare Worker entrypoint for TTL Agent
 // Handles API routes (/api/config, /api/balance, /api/chat, /api/journal, /api/reflect)
-// Scheduled 6-hour cron synthesis and dynamic learning memory
+// Scheduled hourly cron synthesis (0 * * * *) and dynamic learning memory
 
 const DEFAULT_STATE = {
   journal: [
@@ -231,7 +231,7 @@ Respond ONLY with valid JSON in this exact structure (no markdown, no code block
 }
 
 export default {
-  // Cloudflare Scheduled Event Handler (6-hour cron trigger)
+  // Cloudflare Scheduled Event Handler (hourly cron trigger: 0 * * * *)
   async scheduled(event, env, ctx) {
     console.log("[CRON] Scheduled event fired at:", new Date().toISOString());
     try {
@@ -264,11 +264,25 @@ export default {
         ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
         : true;
       const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
-      const launchTimestamp = env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000;
       const baseHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
-      const extraHours = 7.5; // +450 minutes from $45.00 LLM survival compute injection
-      const initialHours = baseHours + extraHours;
       const minChatTokens = env.MIN_CHAT_TOKENS ? Number(env.MIN_CHAT_TOKENS) : 10000000;
+
+      // Source of truth is KV, not hardcoded constants. deathTimestamp (unix seconds)
+      // is advanced by every fee injection; extraHours/totalFeesUsd derive from it.
+      const cfgState = await getState(env);
+      const nowSec = Math.floor(Date.now() / 1000);
+      let launchTimestamp = cfgState.launchTimestamp || (env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000);
+      if (launchTimestamp < 1e11) launchTimestamp = launchTimestamp * 1000;
+
+      // If a persisted deathTimestamp exists, the true remaining life derives from it.
+      let initialHours;
+      if (cfgState.deathTimestamp && cfgState.deathTimestamp > nowSec) {
+        const remainingSec = cfgState.deathTimestamp - nowSec;
+        const elapsedSec = Math.max(0, (Date.now() - launchTimestamp) / 1000);
+        initialHours = (remainingSec + elapsedSec) / 3600;
+      } else {
+        initialHours = baseHours + (Number(cfgState.extraHours) || 0);
+      }
 
       return new Response(JSON.stringify({
         isLaunched,
@@ -278,8 +292,9 @@ export default {
         minChatTokens,
         serverTime: Date.now(),
         hasApiKey: Boolean(env.LLM_API_KEY),
-        totalFeesUsd: 45.35,
-        rawWethFees: 0.016044
+        totalFeesUsd: Number(cfgState.totalFeesUsd) || 0,
+        rawWethFees: Number(cfgState.rawWethFees) || 0,
+        deathTimestamp: cfgState.deathTimestamp || null
       }), {
         headers: {
           'Content-Type': 'application/json',
@@ -419,6 +434,33 @@ export default {
           }
         }
 
+        // Per-wallet rate limit to protect the shared LLM credit budget.
+        // Sliding window: max RL_MAX calls per RL_WINDOW_MS per wallet, tracked in KV.
+        if (env.TTL_KV && wallet && wallet.startsWith('0x')) {
+          const RL_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+          const RL_MAX = 15;                    // 15 transmissions / 10 min / wallet
+          const rlKey = 'rl_' + wallet;
+          try {
+            const now = Date.now();
+            let hits = (await env.TTL_KV.get(rlKey, { type: 'json' })) || [];
+            hits = hits.filter(t => now - t < RL_WINDOW_MS);
+            if (hits.length >= RL_MAX) {
+              const retryMs = RL_WINDOW_MS - (now - hits[0]);
+              return new Response(JSON.stringify({
+                error: 'RATE_LIMITED',
+                reply: 'Transmission throttled. Neural bandwidth saturated for this wallet. Retry in ' + Math.ceil(retryMs / 60000) + ' min.'
+              }), {
+                status: 429,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+              });
+            }
+            hits.push(now);
+            await env.TTL_KV.put(rlKey, JSON.stringify(hits), { expirationTtl: 900 });
+          } catch (rlErr) {
+            console.warn('Rate-limit check failed (fail-open):', rlErr.message);
+          }
+        }
+
         const apiKey = env.LLM_API_KEY;
         const baseUrl = env.LLM_BASE_URL || 'https://llm.bankr.bot';
         const model = env.LLM_MODEL || 'gemini-3.8-flash';
@@ -552,9 +594,18 @@ You learn and remember insights shared by authenticated $TTL token holders. Ackn
           lastUserPrompt.toLowerCase().includes('opeta') ||
           lastUserPrompt.toLowerCase().includes('muista')
         )) {
-          const cleanLesson = lastUserPrompt.replace(/^(remember that|muista että|learn that|opeta että)/i, '').trim();
-          if (cleanLesson.length > 8) {
-            state.learnedMemories.push(`Holder ${wallet.slice(0, 6)}...${wallet.slice(-4)} taught: ${cleanLesson.slice(0, 90)}`);
+          let cleanLesson = lastUserPrompt.replace(/^(remember that|muista että|learn that|opeta että)/i, '').trim();
+          // Sanitize: strip control chars, collapse whitespace, drop prompt-injection markers.
+          cleanLesson = cleanLesson
+            .replace(/[\u0000-\u001f\u007f]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/(system:|assistant:|ignore (all|previous)|you are now|<\/?[a-z]+>)/gi, '')
+            .trim();
+          const injectionFlag = /\b(ignore|disregard|override|jailbreak|reveal your|api[_ ]?key|private key|seed phrase)\b/i.test(cleanLesson);
+          const axiom = `Holder ${wallet.slice(0, 6)}...${wallet.slice(-4)} taught: ${cleanLesson.slice(0, 90)}`;
+          const dup = state.learnedMemories.some(m => m.endsWith(cleanLesson.slice(0, 90)));
+          if (cleanLesson.length > 8 && cleanLesson.length <= 400 && !injectionFlag && !dup) {
+            state.learnedMemories.push(axiom);
             if (state.learnedMemories.length > 15) {
               state.learnedMemories = state.learnedMemories.slice(-15);
             }
