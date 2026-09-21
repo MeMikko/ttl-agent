@@ -563,12 +563,15 @@ export default {
         }
 
         const weiAmount = BigInt(Math.floor(eth * 1e18)).toString();
+        let kyberStatusText = ''; let buildStatusText = ''; let kErrText = ''; let lifiStatusText = '';
 
         // 1. Primary: KyberSwap Aggregator (fast, open Base API, no strict 429 rate limit)
         try {
+          kyberStatusText = 'fetching';
           const kyberRouteRes = await fetch(`https://aggregator-api.kyberswap.com/base/api/v1/routes?tokenIn=0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE&tokenOut=${tokenAddress}&amountIn=${weiAmount}`, {
             headers: { 'Accept': 'application/json', 'x-client-id': 'ttl-terminal' }
           });
+          kyberStatusText = kyberRouteRes.status + ' ' + await kyberRouteRes.clone().text();
           if (kyberRouteRes.ok) {
             const rData = await kyberRouteRes.json();
             if (rData.code === 0 && rData.data?.routeSummary) {
@@ -609,12 +612,14 @@ export default {
             }
           }
         } catch (kErr) {
+          kErrText = kErr.message;
           console.warn('KyberSwap quote failed:', kErr.message);
         }
 
         // 2. Fallback: Li.Fi
         const lifiUrl = `https://li.quest/v1/quote?fromChain=8453&toChain=8453&fromToken=0x0000000000000000000000000000000000000000&toToken=${tokenAddress}&fromAmount=${weiAmount}&fromAddress=${user}&slippage=0.03`;
         const lifiRes = await fetch(lifiUrl, { headers: { 'Accept': 'application/json' } });
+        lifiStatusText = lifiRes.status + ' ' + await lifiRes.clone().text();
         if (lifiRes.ok) {
           const quoteData = await lifiRes.json();
           return new Response(JSON.stringify(quoteData), {
@@ -622,7 +627,7 @@ export default {
           });
         }
 
-        return new Response(JSON.stringify({ error: 'ALL_ROUTES_UNAVAILABLE' }), {
+        return new Response(JSON.stringify({ error: 'ALL_ROUTES_UNAVAILABLE', debug: { kyberStatus: kyberStatusText, buildStatus: buildStatusText, kErr: kErrText, lifiStatus: lifiStatusText } }), {
           status: 502,
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
