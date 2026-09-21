@@ -172,7 +172,7 @@ Respond ONLY with valid JSON in this exact structure (no markdown, no code block
           { role: 'system', content: 'You are $TTL autonomous survival agent. Always output raw JSON only.' },
           { role: 'user', content: prompt }
         ],
-        max_tokens: 300,
+        max_tokens: 1200,
         temperature: 0.7
       })
     });
@@ -500,7 +500,7 @@ You learn and remember insights shared by authenticated $TTL token holders. Ackn
               { role: 'system', content: systemPrompt },
               ...userMessages
             ],
-            max_tokens: 600,
+            max_tokens: 1200,
             temperature: 0.7
           })
         });
