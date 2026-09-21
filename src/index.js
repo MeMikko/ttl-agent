@@ -233,7 +233,13 @@ Respond ONLY with valid JSON in this exact structure (no markdown, no code block
 export default {
   // Cloudflare Scheduled Event Handler (6-hour cron trigger)
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(synthesizeLogbookEntry(env, 'SCHEDULED_CRON'));
+    console.log("[CRON] Scheduled event fired at:", new Date().toISOString());
+    try {
+      const result = await synthesizeLogbookEntry(env, "SCHEDULED_CRON");
+      console.log("[CRON] Synthesis completed:", result ? result.day : "null");
+    } catch (e) {
+      console.error("[CRON] Synthesis exception:", e.message);
+    }
   },
 
   async fetch(request, env) {
