@@ -870,3 +870,207 @@ function getEthereumProvider() {
   });
 
 })();
+
+
+/* ==========================================================================
+   FARCASTER IN-APP SWAP IMPLEMENTATION (Farcaster only; browser keeps link)
+   ========================================================================== */
+let isInsideFarcaster = false;
+let cachedSwapQuote = null;
+let quoteFetchTimeout = null;
+
+function setupFarcasterSwap() {
+  const buyBtn = document.getElementById('buy-action-btn');
+  const modal = document.getElementById('fc-swap-modal');
+  const closeBtn = document.getElementById('close-swap-modal-btn');
+  const cancelBtn = document.getElementById('cancel-swap-btn');
+  const ethInput = document.getElementById('swap-eth-amount');
+  const presetPills = document.querySelectorAll('.preset-pill');
+  const executeBtn = document.getElementById('execute-fc-swap-btn');
+  const statusBox = document.getElementById('swap-status-box');
+
+  if (!buyBtn || !modal) return;
+
+  // CRITICAL RULE: Intercept click ONLY when inside Farcaster!
+  // In normal browser, isInsideFarcaster is false, so it falls through to normal <a> navigation!
+  buyBtn.addEventListener('click', (e) => {
+    if (isInsideFarcaster) {
+      e.preventDefault();
+      openFcSwapModal();
+    }
+  });
+
+  function openFcSwapModal() {
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    updateSwapQuote();
+  }
+
+  function closeFcSwapModal() {
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    if (statusBox) {
+      statusBox.classList.add('hidden');
+      statusBox.textContent = '';
+      statusBox.className = 'swap-status-box hidden';
+    }
+  }
+
+  if (closeBtn) closeBtn.addEventListener('click', closeFcSwapModal);
+  if (cancelBtn) cancelBtn.addEventListener('click', closeFcSwapModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeFcSwapModal();
+  });
+
+  // Handle amount presets
+  presetPills.forEach(pill => {
+    pill.addEventListener('click', () => {
+      presetPills.forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      if (ethInput) {
+        ethInput.value = pill.getAttribute('data-amount');
+        updateSwapQuote();
+      }
+    });
+  });
+
+  if (ethInput) {
+    ethInput.addEventListener('input', () => {
+      presetPills.forEach(p => p.classList.remove('active'));
+      clearTimeout(quoteFetchTimeout);
+      quoteFetchTimeout = setTimeout(updateSwapQuote, 400);
+    });
+  }
+
+  async function updateSwapQuote() {
+    const outputEl = document.getElementById('swap-ttl-output');
+    const impactEl = document.getElementById('fuel-impact-preview');
+    if (!outputEl || !ethInput) return;
+
+    const ethVal = parseFloat(ethInput.value);
+    if (isNaN(ethVal) || ethVal <= 0) {
+      outputEl.textContent = 'Enter ETH amount';
+      if (impactEl) impactEl.textContent = '';
+      cachedSwapQuote = null;
+      if (executeBtn) executeBtn.disabled = true;
+      return;
+    }
+
+    outputEl.textContent = 'Fetching quote...';
+    if (impactEl) impactEl.textContent = 'Calculating fuel impact...';
+    if (executeBtn) executeBtn.disabled = true;
+
+    try {
+      const tokenAddress = appConfig.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
+      const weiAmount = BigInt(Math.floor(ethVal * 1e18)).toString();
+      const userAddr = userWalletAddress || '0x4b19ee2a3de2521a3adc901989944c209c0a60ea';
+
+      const quoteUrl = `https://li.quest/v1/quote?fromChain=8453&toChain=8453&fromToken=0x0000000000000000000000000000000000000000&toToken=${tokenAddress}&fromAmount=${weiAmount}&fromAddress=${userAddr}&slippage=0.03`;
+
+      const res = await fetch(quoteUrl);
+      if (!res.ok) {
+        throw new Error('Quote unavailable');
+      }
+      const data = await res.json();
+      cachedSwapQuote = data;
+
+      const rawTokens = BigInt(data.estimate?.toAmount || '0');
+      const formattedTokens = (Number(rawTokens / 1000000000000000000n)).toLocaleString('en-US');
+      outputEl.textContent = `~${formattedTokens} $TTL`;
+
+      // Fee is 0.665% on Base DEX volume
+      // 1 ETH ~ $2780 => $1 volume fee = +10 mins
+      const ethPrice = 2780;
+      const volUsd = ethVal * ethPrice;
+      const feeUsd = volUsd * 0.00665;
+      const addedMins = Math.max(1, Math.round(feeUsd * 10));
+
+      if (impactEl) {
+        impactEl.innerHTML = `⚡ Vol: <strong>$${volUsd.toFixed(2)}</strong> ➔ +${addedMins} mins runtime to agent lifeline`;
+      }
+
+      if (executeBtn) {
+        executeBtn.disabled = false;
+        executeBtn.textContent = 'CONFIRM SWAP IN WARPCASTER';
+      }
+    } catch (err) {
+      console.warn('Swap quote error:', err);
+      outputEl.textContent = 'Quote failed';
+      if (impactEl) impactEl.textContent = 'Liquidity route unavailable for this amount.';
+      if (executeBtn) executeBtn.disabled = true;
+      cachedSwapQuote = null;
+    }
+  }
+
+  // Execute Swap via Farcaster EIP-1193 provider
+  if (executeBtn) {
+    executeBtn.addEventListener('click', async () => {
+      if (!cachedSwapQuote || !cachedSwapQuote.transactionRequest) {
+        alert('Please wait for quote to load.');
+        return;
+      }
+
+      const provider = getEthereumProvider();
+      if (!provider) {
+        alert('Warpcast wallet provider not found.');
+        return;
+      }
+
+      try {
+        executeBtn.disabled = true;
+        executeBtn.textContent = 'SIGN IN WARPCAST...';
+        if (statusBox) {
+          statusBox.className = 'swap-status-box';
+          statusBox.classList.remove('hidden');
+          statusBox.textContent = 'Awaiting transaction signature in Warpcast...';
+        }
+
+        appendLog('SYS', `Initiating in-frame DEX swap (${ethInput.value} ETH ➔ $TTL) via Warpcast wallet...`, 'sys', true);
+
+        const txReq = cachedSwapQuote.transactionRequest;
+        const txParams = {
+          from: userWalletAddress || txReq.from,
+          to: txReq.to,
+          value: txReq.value,
+          data: txReq.data,
+          chainId: '0x2105'
+        };
+
+        if (txReq.gasLimit) txParams.gas = txReq.gasLimit;
+
+        const txHash = await provider.request({
+          method: 'eth_sendTransaction',
+          params: [txParams]
+        });
+
+        console.log('Swap tx broadcast:', txHash);
+        appendLog('SYS', `Swap broadcast to Base! Hash: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`, 'sys', true);
+        appendLog('SYS', 'Creator fee routing directly into agent runtime. Lifeline extended.', 'sys', true);
+
+        if (statusBox) {
+          statusBox.className = 'swap-status-box success';
+          statusBox.innerHTML = `✓ Transaction sent! <br><a href="https://basescan.org/tx/${txHash}" target="_blank" style="color:#50e3c2;text-decoration:underline;">View on Basescan ↗</a>`;
+        }
+
+        executeBtn.textContent = 'SWAP SUBMITTED ✓';
+
+        // Refresh token balances after delay
+        setTimeout(() => {
+          checkTokenBalance();
+          closeFcSwapModal();
+        }, 3500);
+
+      } catch (err) {
+        console.error('Swap execution error:', err);
+        appendLog('SYS', `Swap cancelled or failed: ${err.message || 'User rejected'}`, 'sys', true);
+        if (statusBox) {
+          statusBox.className = 'swap-status-box error';
+          statusBox.textContent = `Failed: ${err.message || 'Transaction rejected in wallet'}`;
+        }
+        executeBtn.disabled = false;
+        executeBtn.textContent = 'CONFIRM SWAP IN WARPCASTER';
+      }
+    });
+  }
+}
+
