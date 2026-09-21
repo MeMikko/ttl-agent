@@ -11,6 +11,12 @@
       "0 * * * *"
     ]
   },
+  "kv_namespaces": [
+    {
+      "binding": "TTL_KV",
+      "id": "27b8a32f4a624db5a02a56e6ac54c036"
+    }
+  ],
   "vars": {
     "IS_LAUNCHED": "true",
     "TOKEN_ADDRESS": "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3",
