@@ -1,0 +1,24 @@
+{
+  "name": "ttl-agent",
+  "version": "1.0.0",
+  "description": "TTL ($TTL) — Autonomous survival-clock agent on Base",
+  "main": "agent/heartbeat.js",
+  "type": "module",
+  "scripts": {
+    "start": "node agent/heartbeat.js",
+    "heartbeat": "node agent/heartbeat.js --once",
+    "daemon": "node agent/heartbeat.js --interval 60000"
+  },
+  "dependencies": {
+    "ethers": "^6.13.2"
+  },
+  "keywords": [
+    "ai-agent",
+    "base",
+    "time-to-live",
+    "autonomous",
+    "memetoken"
+  ],
+  "author": "MeMikko",
+  "license": "MIT"
+}
