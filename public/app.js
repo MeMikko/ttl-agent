@@ -1123,23 +1123,82 @@ function setupFarcasterSwap() {
         appendLog('SYS', `Initiating in-frame DEX swap (${ethInput.value} ETH ➔ $TTL) via Warpcast wallet...`, 'sys', true);
 
         const txReq = cachedSwapQuote.transactionRequest;
-        const txParams = {
-          from: (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : txReq.from,
-          to: txReq.to,
-          value: txReq.value,
-          data: txReq.data,
-          chainId: '0x2105'
-        };
 
-        if (txReq.gasLimit) txParams.gas = txReq.gasLimit;
+        // Resolve active account straight from the wallet (never trust a quote-baked 'from')
+        let fromAddress = (typeof connectedWallet !== 'undefined' && connectedWallet) ? connectedWallet : null;
+        try {
+          const accts = await provider.request({ method: 'eth_requestAccounts' });
+          if (accts && accts.length > 0) fromAddress = accts[0];
+        } catch (acctErr) {
+          console.warn('eth_requestAccounts failed, using cached wallet:', acctErr);
+        }
 
-        const txHash = await provider.request({
-          method: 'eth_sendTransaction',
-          params: [txParams]
-        });
+        // Ensure the wallet is on Base before signing (ignored if already there)
+        try {
+          await provider.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: '0x2105' }]
+          });
+        } catch (switchErr) {
+          console.warn('wallet_switchEthereumChain skipped:', switchErr && switchErr.message);
+        }
+
+        let txHash = null;
+
+        // Farcaster/Warpcast prefer EIP-5792 wallet_sendCalls; it opens the native confirm sheet reliably.
+        try {
+          const callResult = await provider.request({
+            method: 'wallet_sendCalls',
+            params: [{
+              version: '1.0',
+              chainId: '0x2105',
+              from: fromAddress,
+              calls: [{
+                to: txReq.to,
+                value: txReq.value,
+                data: txReq.data
+              }]
+            }]
+          });
+          // wallet_sendCalls returns a bundle id (string or { id }) rather than a tx hash
+          const bundleId = (callResult && typeof callResult === 'object') ? (callResult.id || callResult.bundleId) : callResult;
+          console.log('wallet_sendCalls bundle:', bundleId);
+
+          // Try to resolve the actual tx hash from the bundle status
+          try {
+            const status = await provider.request({
+              method: 'wallet_getCallsStatus',
+              params: [bundleId]
+            });
+            const receipts = status && (status.receipts || (status.calls && status.calls));
+            if (receipts && receipts[0] && receipts[0].transactionHash) {
+              txHash = receipts[0].transactionHash;
+            }
+          } catch (statusErr) {
+            console.warn('wallet_getCallsStatus not available:', statusErr && statusErr.message);
+          }
+          if (!txHash) txHash = bundleId; // fall back to showing the bundle id
+        } catch (sendCallsErr) {
+          console.warn('wallet_sendCalls unavailable, falling back to eth_sendTransaction:', sendCallsErr && sendCallsErr.message);
+
+          // Fallback: legacy eth_sendTransaction WITHOUT the illegal chainId field
+          const txParams = {
+            from: fromAddress,
+            to: txReq.to,
+            value: txReq.value,
+            data: txReq.data
+          };
+          if (txReq.gasLimit) txParams.gas = txReq.gasLimit;
+
+          txHash = await provider.request({
+            method: 'eth_sendTransaction',
+            params: [txParams]
+          });
+        }
 
         console.log('Swap tx broadcast:', txHash);
-        appendLog('SYS', `Swap broadcast to Base! Hash: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`, 'sys', true);
+        const shortId = (typeof txHash === 'string' && txHash.length > 18) ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : String(txHash);
+        appendLog('SYS', `Swap broadcast to Base! Ref: ${shortId}`, 'sys', true);
         appendLog('SYS', 'Creator fee routing directly into agent runtime. Lifeline extended.', 'sys', true);
 
         if (statusBox) {
