@@ -321,6 +321,27 @@ export default {
     }
 
     // API: Manual trigger to synthesize reflection/logbook entry
+    // TEMP one-time seed route (guarded). Merges real fee/time values into KV state.
+    if (url.pathname === '/api/admin/init-state' && request.method === 'POST') {
+      const provided = request.headers.get('x-init-token') || '';
+      const INIT_NONCE = 'ded15bb05f312f2b8734e45ed834b4859e5fd2313b81c3a4';
+      if (provided !== INIT_NONCE) {
+        return new Response(JSON.stringify({ error: 'FORBIDDEN' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+      }
+      const body = await request.json().catch(() => ({}));
+      const state = await getState(env);
+      state.deathTimestamp = Number(body.deathTimestamp);
+      state.totalFeesUsd = Number(body.totalFeesUsd);
+      state.rawWethFees = Number(body.rawWethFees);
+      await saveState(env, state);
+      return new Response(JSON.stringify({
+        ok: true,
+        deathTimestamp: state.deathTimestamp,
+        totalFeesUsd: state.totalFeesUsd,
+        rawWethFees: state.rawWethFees
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
     if (url.pathname === '/api/reflect' && (request.method === 'POST' || request.method === 'GET')) {
       const entry = await synthesizeLogbookEntry(env, 'MANUAL_TRIGGER');
       return new Response(JSON.stringify({
