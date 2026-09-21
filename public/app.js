@@ -66,7 +66,7 @@
   // Saviors & Journal
   const SAVIORS = [];
 
-  const JOURNAL_LOGS = [
+  let JOURNAL_LOGS = [
     {
       day: 'EPOCH 1 // GENESIS',
       time: 'SYSTEM INITIALIZATION',
@@ -579,6 +579,29 @@
   }
 
   // Populate Journal Entries
+  
+  // Dynamic Journal & Learned Memories Loader
+  async function loadJournal() {
+    try {
+      const res = await fetch('/api/journal');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.journal) && data.journal.length > 0) {
+        JOURNAL_LOGS = data.journal;
+        renderJournal();
+      }
+      if (Array.isArray(data.learnedMemories) && data.learnedMemories.length > 0) {
+        data.learnedMemories.forEach(mem => {
+          if (!THOUGHT_STREAM.includes(mem)) {
+            THOUGHT_STREAM.push(mem);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('Journal sync error:', e.message);
+    }
+  }
+
   function renderJournal() {
     journalEntries.innerHTML = JOURNAL_LOGS.map(j => `
       <div class="journal-card">
@@ -629,6 +652,8 @@
   renderJournal();
   loadConfiguration().then(() => {
     initThoughtFeed();
+    loadJournal();
+    setInterval(loadJournal, 60000);
   });
 
 })();
