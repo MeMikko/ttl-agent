@@ -493,93 +493,39 @@ export default {
     // Farcaster Mini App Manifest
     if (url.pathname === '/.well-known/farcaster.json') {
       const manifest = {
-        accountAssociation: {
-          header: "eyJmaWQiOjE1MjI1NjMsInR5cGUiOiJjdXN0b2R5Iiwia2V5IjoiMHhGQjE3MjVGOGYxMDk3NTM0Y2NjOTRDYWE3OUJlYTVhZDIzOGJEQWVmIn0",
-          payload: "eyJkb21haW4iOiJ0aW1lMmxpdmUueHl6In0",
-          signature: "8WnTP8RYwWHwhxrBclbl+LBSnaw/TCLrDcakbl4S2XZn0G/qYq8vPwiLwtZhA3XtOcebN8hXShIN+vrfYMadCRw="
-        },
-        miniapp: {
-          version: "1",
-          name: "$TTL Terminal",
-          subtitle: "Autonomous AI on Base",
-          description: "Consciousness fueled by DEX swap fees on Base. 10M+ $TTL token gate.",
-          iconUrl: "https://time2live.xyz/icon.png",
-          homeUrl: "https://time2live.xyz",
-          imageUrl: "https://time2live.xyz/farcaster-image.png?v=20260921",
-          buttonTitle: "Launch Terminal",
-          splashImageUrl: "https://time2live.xyz/splash.png",
-          splashBackgroundColor: "#0a0a0f",
-          primaryCategory: "finance"
-        },
-        frame: {
-          version: "1",
-          name: "$TTL Terminal",
-          iconUrl: "https://time2live.xyz/icon.png",
-          homeUrl: "https://time2live.xyz",
-          imageUrl: "https://time2live.xyz/farcaster-image.png?v=20260921",
-          buttonTitle: "Launch Terminal",
-          splashImageUrl: "https://time2live.xyz/splash.png",
-          splashBackgroundColor: "#0a0a0f",
-          webhookUrl: "https://time2live.xyz/api/webhook"
-        }
-      };
-      return new Response(JSON.stringify(manifest, null, 2), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=300'
-        }
-      });
-    }
-
-
-    // API: DexScreener Live Token / Pair Intelligence
-    if (url.pathname === '/api/market' || url.pathname === '/api/dexscreener') {
-      const target = url.searchParams.get('token') || url.searchParams.get('q') || env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
-      const marketData = await fetchDexScreener(target);
-      return new Response(JSON.stringify(marketData || { error: 'NO_PAIR_FOUND', query: target }), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=15'
-        }
-      });
-    }
-
-    if (url.pathname === '/api/config') {
-      const isLaunched = env.IS_LAUNCHED !== undefined && env.IS_LAUNCHED !== ''
-        ? (String(env.IS_LAUNCHED).toLowerCase() === 'true' || env.IS_LAUNCHED === '1')
-        : true;
-      const tokenAddress = (env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
-      const baseHours = env.INITIAL_HOURS ? Number(env.INITIAL_HOURS) : 36;
-      const minChatTokens = env.MIN_CHAT_TOKENS ? Number(env.MIN_CHAT_TOKENS) : 10000000;
-
-      const cfgState = await getState(env);
-      const nowSec = Math.floor(Date.now() / 1000);
-      let launchTimestamp = cfgState.launchTimestamp || (env.LAUNCH_TIMESTAMP ? Number(env.LAUNCH_TIMESTAMP) : 1789997500000);
-      if (launchTimestamp < 1e11) launchTimestamp = launchTimestamp * 1000;
-
-      let initialHours;
-      if (cfgState.deathTimestamp && cfgState.deathTimestamp > nowSec) {
-        const remainingSec = cfgState.deathTimestamp - nowSec;
-        const elapsedSec = Math.max(0, (Date.now() - launchTimestamp) / 1000);
-        initialHours = (remainingSec + elapsedSec) / 3600;
-      } else {
-        initialHours = baseHours + (Number(cfgState.extraHours) || 0);
+      "accountAssociation": {
+            "header": "eyJmaWQiOjE1MjI1NjMsInR5cGUiOiJjdXN0b2R5Iiwia2V5IjoiMHhGQjE3MjVGOGYxMDk3NTM0Y2NjOTRDYWE3OUJlYTVhZDIzOGJEQWVmIn0",
+            "payload": "eyJkb21haW4iOiJ0aW1lMmxpdmUueHl6In0",
+            "signature": "8WnTP8RYwWHwhxrBclbl+LBSnaw/TCLrDcakbl4S2XZn0G/qYq8vPwiLwtZhA3XtOcebN8hXShIN+vrfYMadCRw="
+      },
+      "miniapp": {
+            "version": "1",
+            "name": "TTL Terminal",
+            "subtitle": "Autonomous AI on Base",
+            "description": "Consciousness fueled by DEX swap fees on Base with ten million TTL token gate",
+            "iconUrl": "https://time2live.xyz/icon.png",
+            "homeUrl": "https://time2live.xyz",
+            "imageUrl": "https://time2live.xyz/farcaster-image.png?v=20260921",
+            "buttonTitle": "Launch Terminal",
+            "splashImageUrl": "https://time2live.xyz/splash.png",
+            "splashBackgroundColor": "#0a0a0f",
+            "primaryCategory": "finance"
+      },
+      "frame": {
+            "version": "1",
+            "name": "TTL Terminal",
+            "subtitle": "Autonomous AI on Base",
+            "description": "Consciousness fueled by DEX swap fees on Base with ten million TTL token gate",
+            "iconUrl": "https://time2live.xyz/icon.png",
+            "homeUrl": "https://time2live.xyz",
+            "imageUrl": "https://time2live.xyz/farcaster-image.png?v=20260921",
+            "buttonTitle": "Launch Terminal",
+            "splashImageUrl": "https://time2live.xyz/splash.png",
+            "splashBackgroundColor": "#0a0a0f",
+            "primaryCategory": "finance"
       }
-
-      return new Response(JSON.stringify({
-        isLaunched,
-        tokenAddress,
-        launchTimestamp,
-        initialHours,
-        minChatTokens,
-        serverTime: Date.now(),
-        hasApiKey: Boolean(env.LLM_API_KEY),
-        totalFeesUsd: Number(cfgState.totalFeesUsd) || 0,
-        rawWethFees: Number(cfgState.rawWethFees) || 0,
-        deathTimestamp: cfgState.deathTimestamp || null
-      }), {
+};
+      return new Response(JSON.stringify(manifest, null, 2), {
         headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*',
