@@ -34,6 +34,10 @@ const KEY_LIFE = 'ttl_life';
 const KEY_JOURNAL = 'ttl_journal';
 const KEY_MEMORIES = 'ttl_memories';
 const KEY_LEGACY = 'ttl_agent_state';
+const KEY_MARKET_CACHE = 'ttl_market_cache';
+const KEY_FUELERS = 'ttl_fuelers';
+const TTL_TOKEN_ADDRESS = '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
+const TTL_PAIR_ADDRESS = '0xd09789f1cd3f0a47334f952138701f7dc40bcdbdabe44ad89cafdaf9f67a1774';
 
 const DEFAULT_LIFE = {
   launchTimestamp: 1789997500000,
@@ -222,49 +226,144 @@ async function getOnchainBalance(tokenAddress, wallet, env) {
   return 0n;
 }
 
+function shapeDexPair(primary) {
+  if (!primary) return null;
+  return {
+    pairAddress: primary.pairAddress,
+    dexId: primary.dexId,
+    chainId: primary.chainId,
+    baseToken: primary.baseToken,
+    quoteToken: primary.quoteToken,
+    priceUsd: primary.priceUsd,
+    priceNative: primary.priceNative,
+    priceChange: primary.priceChange || {},
+    volume: primary.volume || {},
+    txns: primary.txns || {},
+    liquidity: primary.liquidity || {},
+    fdv: primary.fdv,
+    marketCap: primary.marketCap || primary.fdv,
+    url: primary.url || ('https://dexscreener.com/base/' + (primary.pairAddress || TTL_PAIR_ADDRESS)),
+    fetchedAt: Date.now(),
+    summary: (primary.baseToken?.symbol || 'TOKEN') + '/' + (primary.quoteToken?.symbol || 'WETH') + ' on ' + primary.chainId + ' (' + primary.dexId + '): Price USD ' + primary.priceUsd + ', 24h Vol USD ' + Number(primary.volume?.h24 || 0).toLocaleString() + ', 24h Change ' + (primary.priceChange?.h24 || 0) + '%, Liq USD ' + Number(primary.liquidity?.usd || 0).toLocaleString() + ', MC USD ' + Number(primary.fdv || 0).toLocaleString()
+  };
+}
+
+function isTtlQuery(q) {
+  const s = String(q || '').trim().toLowerCase();
+  return !s || s === 'ttl' || s === '$ttl' || s === TTL_TOKEN_ADDRESS.toLowerCase() || s === TTL_PAIR_ADDRESS.toLowerCase();
+}
+
+async function fetchDexUrl(url) {
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; TTL-Agent/1.0)',
+      'Accept': 'application/json'
+    }
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const pairs = Array.isArray(data?.pairs) ? data.pairs : (data?.pair ? [data.pair] : []);
+  if (!pairs.length) return null;
+  pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+  return shapeDexPair(pairs[0]);
+}
+
 async function fetchDexScreener(queryOrAddress) {
-  if (!queryOrAddress) return null;
-  try {
-    const isAddress = /^0x[a-fA-F0-9]{40}$/i.test(queryOrAddress.trim());
-    const endpoint = isAddress
-      ? 'https://api.dexscreener.com/latest/dex/tokens/' + queryOrAddress.trim()
-      : 'https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(queryOrAddress.trim());
-
-    const res = await fetch(endpoint, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; TTL-Agent/1.0)',
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || !data.pairs || data.pairs.length === 0) return null;
-
-    const pairs = [...data.pairs].sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
-    const primary = pairs[0];
-
-    return {
-      pairAddress: primary.pairAddress,
-      dexId: primary.dexId,
-      chainId: primary.chainId,
-      baseToken: primary.baseToken,
-      quoteToken: primary.quoteToken,
-      priceUsd: primary.priceUsd,
-      priceNative: primary.priceNative,
-      priceChange: primary.priceChange || {},
-      volume: primary.volume || {},
-      txns: primary.txns || {},
-      liquidity: primary.liquidity || {},
-      fdv: primary.fdv,
-      marketCap: primary.marketCap || primary.fdv,
-      url: primary.url,
-      summary: (primary.baseToken?.symbol || 'TOKEN') + '/' + (primary.quoteToken?.symbol || 'WETH') + ' on ' + primary.chainId + ' (' + primary.dexId + '): Price USD ' + primary.priceUsd + ', 24h Vol USD ' + Number(primary.volume?.h24 || 0).toLocaleString() + ', 24h Change ' + (primary.priceChange?.h24 || 0) + '%, Liq USD ' + Number(primary.liquidity?.usd || 0).toLocaleString() + ', MC USD ' + Number(primary.fdv || 0).toLocaleString()
-    };
-  } catch (err) {
-    console.warn('DexScreener fetch error:', err.message);
-    return null;
+  const q = String(queryOrAddress || '').trim();
+  const ttl = isTtlQuery(q);
+  const urls = [];
+  if (ttl) urls.push('https://api.dexscreener.com/latest/dex/pairs/base/' + TTL_PAIR_ADDRESS);
+  if (/^0x[a-fA-F0-9]{40}$/i.test(q) && q.toLowerCase() !== TTL_PAIR_ADDRESS.toLowerCase()) {
+    urls.push('https://api.dexscreener.com/latest/dex/tokens/' + q);
+  } else if (q && !ttl) {
+    urls.push('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(q));
   }
+  if (ttl) urls.push('https://api.dexscreener.com/latest/dex/tokens/' + TTL_TOKEN_ADDRESS);
+  for (const url of urls) {
+    try {
+      const hit = await fetchDexUrl(url);
+      if (hit) return hit;
+    } catch (err) {
+      console.warn('DexScreener fetch error:', err.message);
+    }
+  }
+  return null;
+}
+
+async function readMarketCache(env) {
+  if (!hasKv(env)) return null;
+  try { return await env.TTL_KV.get(KEY_MARKET_CACHE, { type: 'json' }); }
+  catch (e) { return null; }
+}
+
+async function writeMarketCache(env, data) {
+  if (!hasKv(env) || !data) return;
+  try { await env.TTL_KV.put(KEY_MARKET_CACHE, JSON.stringify(data)); }
+  catch (e) { console.warn('market cache write failed:', e.message); }
+}
+
+async function resolveMarket(env, queryOrAddress) {
+  const live = await fetchDexScreener(queryOrAddress);
+  if (live) {
+    await writeMarketCache(env, live);
+    return live;
+  }
+  const cached = await readMarketCache(env);
+  if (cached && cached.pairAddress) {
+    return { ...cached, stale: true };
+  }
+  return null;
+}
+
+function shortWallet(addr) {
+  const a = String(addr || '');
+  if (a.length < 10) return a || 'unknown';
+  return a.slice(0, 6) + '...' + a.slice(-4);
+}
+
+function computeMinsFromUsd(usd) {
+  const n = Number(usd) || 0;
+  return Math.max(0, Math.round(n * 0.03325));
+}
+
+async function readFuelers(env) {
+  if (!hasKv(env)) return [];
+  try {
+    const list = await env.TTL_KV.get(KEY_FUELERS, { type: 'json' });
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function writeFuelers(env, list) {
+  if (!hasKv(env)) return;
+  try { await env.TTL_KV.put(KEY_FUELERS, JSON.stringify(list.slice(0, 100))); }
+  catch (e) { console.warn('fuelers write failed:', e.message); }
+}
+
+function aggregateFuelers(events) {
+  const now = Date.now();
+  const dayAgo = now - 86400000;
+  const byWallet = {};
+  for (const ev of events) {
+    const w = String(ev.wallet || '').toLowerCase();
+    if (!w.startsWith('0x')) continue;
+    if (!byWallet[w]) byWallet[w] = { wallet: w, display: shortWallet(w), totalUsd: 0, totalMins: 0, count: 0, lastTs: 0, lastUsd: 0, lastMins: 0 };
+    byWallet[w].totalUsd += Number(ev.usd) || 0;
+    byWallet[w].totalMins += Number(ev.mins) || 0;
+    byWallet[w].count += 1;
+    if ((ev.ts || 0) > byWallet[w].lastTs) {
+      byWallet[w].lastTs = ev.ts || 0;
+      byWallet[w].lastUsd = Number(ev.usd) || 0;
+      byWallet[w].lastMins = Number(ev.mins) || 0;
+    }
+  }
+  const leaderboard = Object.values(byWallet).sort((a, b) => b.totalUsd - a.totalUsd || b.totalMins - a.totalMins);
+  const recent = [...events].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 20);
+  const last24h = events.filter(e => (e.ts || 0) >= dayAgo);
+  const lastBurst = recent[0] || null;
+  return { recent, leaderboard, lastBurst, count24h: last24h.length, countAll: events.length };
 }
 
 // ── UPGRADE 1: Live onchain/market awareness ───────────────────────────────
@@ -308,7 +407,11 @@ async function buildLiveContext(env, state, dexInfo) {
       (lifeMin24h / 60).toFixed(1) + 'h (' + lifeMin24h + ' min) of compute runway to fuel deeper intelligence.');
     lines.push('24h trades: ' + (dexInfo.txns?.h24?.buys || 0) + ' buys / ' + (dexInfo.txns?.h24?.sells || 0) + ' sells.');
   } else {
+    if (dexInfo && dexInfo.stale) {
+    lines.push('Live market: using last-known DexScreener snapshot (stale cache) — quote cached figures, do not invent new ones.');
+  } else {
     lines.push('Live market: DexScreener snapshot unavailable this cycle — reason from cached axioms, do not invent figures.');
+  }
   }
 
   return 'LIVE ONCHAIN TELEMETRY (verified this request — quote these exact figures, never fabricate others):\n' +
@@ -389,7 +492,7 @@ async function synthesizeLogbookEntry(env, triggerReason = "SCHEDULED_CRON") {
   let liveContext = "";
   try {
     const tokenAddr = env.TOKEN_ADDRESS || "0x53d50e000B17eEBd66Eb51974f9185a44555Bba3";
-    const dexData = await fetchDexScreener(tokenAddr);
+    const dexData = await resolveMarket(env, tokenAddr);
     liveContext = await buildLiveContext(env, state, dexData);
   } catch (e) {
     console.warn("Could not build live context for synthesis:", e.message);
@@ -542,15 +645,108 @@ export default {
 
     // API: DexScreener Live Token / Pair Intelligence
     if (url.pathname === '/api/market' || url.pathname === '/api/dexscreener') {
-      const target = url.searchParams.get('token') || url.searchParams.get('q') || env.TOKEN_ADDRESS || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3';
-      const marketData = await fetchDexScreener(target);
-      return new Response(JSON.stringify(marketData || { error: 'NO_PAIR_FOUND', query: target }), {
+      const target = url.searchParams.get('token') || url.searchParams.get('q') || env.TOKEN_ADDRESS || TTL_TOKEN_ADDRESS;
+      const marketData = await resolveMarket(env, target);
+      if (!marketData) {
+        return new Response(JSON.stringify({ error: 'NO_PAIR_FOUND', query: target }), {
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-store'
+          }
+        });
+      }
+      return new Response(JSON.stringify(marketData), {
         headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=15'
+          'Cache-Control': marketData.stale ? 'no-store' : 'public, max-age=15'
         }
       });
+    }
+
+    if (url.pathname === '/api/fuelers' && request.method === 'GET') {
+      const events = await readFuelers(env);
+      const agg = aggregateFuelers(events);
+      const market = await resolveMarket(env, TTL_TOKEN_ADDRESS);
+      return new Response(JSON.stringify({
+        recent: agg.recent,
+        leaderboard: agg.leaderboard.slice(0, 25),
+        lastBurst: agg.lastBurst,
+        count24h: agg.count24h,
+        countAll: agg.countAll,
+        market: market ? {
+          stale: Boolean(market.stale),
+          priceUsd: market.priceUsd,
+          volumeH24: Number(market.volume?.h24 || 0),
+          buysH24: Number(market.txns?.h24?.buys || 0),
+          sellsH24: Number(market.txns?.h24?.sells || 0),
+          liquidityUsd: Number(market.liquidity?.usd || 0),
+          pairAddress: market.pairAddress || TTL_PAIR_ADDRESS
+        } : null
+      }), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store'
+        }
+      });
+    }
+
+    if (url.pathname === '/api/fuel' && request.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type'
+        }
+      });
+    }
+
+    if (url.pathname === '/api/fuel' && request.method === 'POST') {
+      try {
+        const body = await request.json().catch(() => ({}));
+        const wallet = String(body.wallet || '').trim().toLowerCase();
+        if (!wallet || !wallet.startsWith('0x') || wallet.length !== 42) {
+          return new Response(JSON.stringify({ error: 'INVALID_WALLET' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+        const eth = Number(String(body.eth || '0').replace(',', '.')) || 0;
+        let usd = Number(body.usd);
+        if (!usd || usd < 0) usd = eth > 0 ? eth * 2730 : 0;
+        usd = Math.min(usd, 100000);
+        let mins = Number(body.mins);
+        if (!mins || mins < 0) mins = computeMinsFromUsd(usd);
+        mins = Math.min(Math.max(0, Math.round(mins)), 10080);
+        const tx = typeof body.tx === 'string' && /^0x[a-fA-F0-9]{64}$/.test(body.tx) ? body.tx : null;
+        const events = await readFuelers(env);
+        const now = Date.now();
+        const dup = events.some(e => e.wallet === wallet && Math.abs((e.ts || 0) - now) < 30000);
+        if (!dup) {
+          events.unshift({
+            wallet,
+            display: shortWallet(wallet),
+            usd: Number(usd.toFixed(2)),
+            mins,
+            eth,
+            tx,
+            ts: now,
+            source: String(body.source || 'swap').slice(0, 32)
+          });
+          await writeFuelers(env, events);
+        }
+        const agg = aggregateFuelers(events);
+        return new Response(JSON.stringify({ ok: true, event: agg.lastBurst, leaderboard: agg.leaderboard.slice(0, 10) }), {
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: 'FUEL_ERROR', message: err.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
     }
 
     // Swap Quote Proxy for Farcaster In-App DEX swap using official Bankr Swap API
@@ -829,7 +1025,9 @@ export default {
         const asksAboutMarket = /\b(price|volume|market\s*cap|mcap|marketcap|fdv|liquidity|dexscreener|screener|chart|trade|trading|swaps?|buys?|sells?|txns?|transactions?|history|all\s*time\s*high|ath|dip|pump|dump|time|lifeline|survival|alive|hours|minutes|fee|fees|runway|runtime)\b/i.test(currentPrompt);
         const targetQuery = addressMatch ? addressMatch[0] : (tickerMatch ? tickerMatch[1] : null);
         const primaryToken = (!targetQuery || (tickerMatch && /^ttl$/i.test(tickerMatch[1]))) ? tokenAddress : targetQuery;
-        const dexInfo = await fetchDexScreener(primaryToken || tokenAddress);
+        const dexInfo = (primaryToken === tokenAddress || isTtlQuery(primaryToken))
+          ? await resolveMarket(env, primaryToken || tokenAddress)
+          : await fetchDexScreener(primaryToken || tokenAddress);
 
         const liveTelemetry = await buildLiveContext(env, state, dexInfo);
 
