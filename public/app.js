@@ -1026,7 +1026,7 @@ function getEthereumProviderSync() {
       saviorsList.innerHTML = `
         <div style="padding: 16px 12px; text-align: center; color: #64748b; font-size: 0.75rem; border: 1px dashed rgba(255,255,255,0.08); border-radius: 6px;">
           No emergency rescues recorded yet.<br>
-          <span style="color: #94a3b8;">Buy $TTL on Base to put your wallet on the board.</span>
+          <span style="color: #94a3b8;">Buy $TTL in Farcaster to put your wallet on the board.</span>
         </div>
       `;
       return;
