@@ -163,6 +163,8 @@ function getEthereumProviderSync() {
   let connectedWallet = null;
   let userBalance = 0;
   let hasChatAccess = false;
+  window.getConnectedWallet = () => connectedWallet;
+  window.getTtlUserBalance = () => userBalance;
 
   // DOM Elements
   const timerHours = document.getElementById('timer-hours');
@@ -818,19 +820,21 @@ function getEthereumProviderSync() {
       if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data.recent) && data.recent.length) {
-        SAVIORS = data.recent.slice(0, 12).map(ev => ({
-          wallet: ev.display || ev.wallet,
-          state: '$' + Number(ev.usd || 0).toFixed(2) + ' fuel • ' + (ev.source || 'swap'),
-          timeAdded: formatMins(ev.mins)
-        }));
-      } else if (Array.isArray(data.leaderboard) && data.leaderboard.length) {
-        SAVIORS = data.leaderboard.slice(0, 12).map(row => ({
-          wallet: row.display || row.wallet,
-          state: row.count + ' fills • $' + Number(row.totalUsd || 0).toFixed(2),
-          timeAdded: formatMins(row.totalMins)
-        }));
+        SAVIORS = data.recent.slice(0, 12).map(ev => {
+          const usd = Number(ev.usd || 0);
+          const ttlLabel = formatTtlDelta(ev.ttl);
+          return {
+            wallet: ev.display || ev.wallet,
+            state: ttlLabel
+              ? (ttlLabel + ' this swap • $' + usd.toFixed(2))
+              : ('$' + usd.toFixed(2) + ' this swap'),
+            timeAdded: formatMins(ev.mins)
+          };
+        });
+      } else {
+        SAVIORS = [];
       }
-      FUEL_LEADERBOARD = Array.isArray(data.leaderboard) ? data.leaderboard : [];
+            FUEL_LEADERBOARD = Array.isArray(data.leaderboard) ? data.leaderboard : [];
       if (data.lastBurst) applyLastBurst(data.lastBurst);
       if (data.market && data.market.pairAddress) {
         const chartBtn = document.getElementById('chart-action-btn');
@@ -853,6 +857,7 @@ function getEthereumProviderSync() {
           wallet: wallet,
           eth: opts && opts.eth,
           usd: opts && opts.usd,
+          ttl: opts && opts.ttl,
           mins: opts && opts.mins,
           tx: opts && opts.tx,
           source: (opts && opts.source) || 'farcaster'
@@ -1051,6 +1056,44 @@ function getEthereumProviderSync() {
 })();
 
 
+
+async function readTtlBalanceTokens(wallet) {
+  const tokenAddr = (window.appConfig?.tokenAddress || '0x53d50e000B17eEBd66Eb51974f9185a44555Bba3').trim();
+  if (!wallet || !tokenAddr.startsWith('0x')) return 0;
+  try {
+    const provider = await getEthereumProvider();
+    if (provider && typeof provider.request === 'function') {
+      const calldata = '0x70a08231000000000000000000000000' + wallet.toLowerCase().replace('0x', '');
+      const hexBal = await provider.request({
+        method: 'eth_call',
+        params: [{ to: tokenAddr, data: calldata }, 'latest']
+      });
+      if (hexBal && hexBal !== '0x') {
+        const balWei = BigInt(hexBal);
+        return Number(balWei / (10n ** 18n)) + Number(balWei % (10n ** 18n)) / 1e18;
+      }
+    }
+  } catch (e) {
+    console.warn('ttl balance via provider failed:', e && e.message);
+  }
+  try {
+    const res = await fetch('/api/balance?wallet=' + encodeURIComponent(wallet) + '&_t=' + Date.now(), { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      return Number(data.balanceTokens || 0);
+    }
+  } catch (e) {}
+  return 0;
+}
+
+function formatTtlDelta(ttl) {
+  const n = Number(ttl) || 0;
+  if (n <= 0) return null;
+  if (n >= 1e6) return '+' + (n / 1e6).toFixed(2) + 'M $TTL';
+  if (n >= 1000) return '+' + (n / 1000).toFixed(1) + 'k $TTL';
+  return '+' + Math.round(n).toLocaleString() + ' $TTL';
+}
+
 /* ==========================================================================
    FARCASTER IN-APP SWAP IMPLEMENTATION (Warplings-style native swapToken)
    ========================================================================== */
@@ -1087,35 +1130,60 @@ function setupFarcasterSwap() {
       // 1. Primary: Native Warpcast in-app swap action (opens Warpcast native swap sheet)
       if (farcasterSdk?.actions?.swapToken) {
         try {
+          let wallet = (typeof window.getConnectedWallet === 'function' && window.getConnectedWallet()) || null;
+          if (!wallet) {
+            try {
+              const p = await getEthereumProvider();
+              const acc = p && await p.request({ method: 'eth_accounts' });
+              if (acc && acc[0]) wallet = String(acc[0]).toLowerCase();
+            } catch (e) {}
+          }
+          const beforeTtl = wallet ? await readTtlBalanceTokens(wallet) : 0;
           console.log('[Farcaster] Triggering sdk.actions.swapToken for', caip19Token);
-          await farcasterSdk.actions.swapToken({ buyToken: caip19Token });
-          try {
-            const ethAmt = parseFloat(String((document.getElementById('swap-eth-amount') || {}).value || '0.005').replace(',', '.')) || 0.005;
-            const usd = ethAmt * 2730;
-            const mins = Math.max(1, Math.round(usd * 0.03325));
-            if (typeof window.recordFuelEvent === 'function') {
-              await window.recordFuelEvent({ wallet: (typeof connectedWallet !== 'undefined' && connectedWallet) || undefined, eth: ethAmt, usd: usd, mins: mins, source: 'swapToken' });
-            }
-            if (typeof window.composeFuelCast === 'function') {
-              await window.composeFuelCast({ mins: mins, usd: usd });
-            }
-          } catch (postErr) {
-            console.warn('post-swap fuel/cast error:', postErr);
+          const swapResult = await farcasterSdk.actions.swapToken({ buyToken: caip19Token });
+          if (swapResult && swapResult.success === false) {
+            console.warn('[Farcaster] swapToken cancelled/failed:', swapResult.reason || swapResult.error);
+            return false;
           }
-          try {
-            const ethAmt = parseFloat(String((document.getElementById('swap-eth-amount') || {}).value || '0.005').replace(',', '.')) || 0.005;
-            const usd = ethAmt * 2730;
-            const mins = Math.max(1, Math.round(usd * 0.03325));
-            if (typeof window.recordFuelEvent === 'function') {
-              await window.recordFuelEvent({ wallet: (typeof connectedWallet !== 'undefined' && connectedWallet) || undefined, eth: ethAmt, usd: usd, mins: mins, source: 'swapToken' });
-            }
-            if (typeof window.composeFuelCast === 'function') {
-              await window.composeFuelCast({ mins: mins, usd: usd });
-            }
-          } catch (postErr) {
-            console.warn('post-swap fuel/cast error:', postErr);
+          const txs = (swapResult && swapResult.swap && swapResult.swap.transactions) || (swapResult && swapResult.transactions) || [];
+          const txHash = (Array.isArray(txs) ? txs : []).find((h) => typeof h === 'string' && /^0x[a-fA-F0-9]{64}$/.test(h)) || null;
+          await new Promise((r) => setTimeout(r, 2800));
+          if (!wallet) {
+            try {
+              const p = await getEthereumProvider();
+              const acc = p && await p.request({ method: 'eth_accounts' });
+              if (acc && acc[0]) wallet = String(acc[0]).toLowerCase();
+            } catch (e) {}
           }
-          return false;
+          const afterTtl = wallet ? await readTtlBalanceTokens(wallet) : beforeTtl;
+          const ttlDelta = Math.max(0, Number(afterTtl) - Number(beforeTtl));
+          let usd = 0;
+          let eth = 0;
+          try {
+            const mres = await fetch('/api/market', { cache: 'no-store' });
+            if (mres.ok) {
+              const m = await mres.json();
+              const price = Number(m.priceUsd || 0);
+              const priceNative = Number(m.priceNative || 0);
+              if (ttlDelta > 0 && price > 0) usd = ttlDelta * price;
+              if (ttlDelta > 0 && priceNative > 0) eth = ttlDelta * priceNative;
+            }
+          } catch (e) {}
+          if (typeof window.recordFuelEvent === 'function' && wallet && (ttlDelta > 0 || txHash)) {
+            await window.recordFuelEvent({
+              wallet: wallet,
+              ttl: ttlDelta,
+              eth: eth,
+              usd: usd,
+              tx: txHash,
+              source: 'swapToken'
+            });
+          }
+          if (typeof window.composeFuelCast === 'function' && (usd > 0 || ttlDelta > 0)) {
+            const mins = Math.max(1, Math.round(usd * 0.03325));
+            await window.composeFuelCast({ mins: mins, usd: usd });
+          }
+                    return false;
         } catch (swapErr) {
           console.warn('[Farcaster] sdk.actions.swapToken error, falling back to modal:', swapErr);
         }
