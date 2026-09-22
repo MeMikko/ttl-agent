@@ -198,13 +198,16 @@ function getEthereumProviderSync() {
   const authWalletBtn = document.getElementById('auth-wallet-btn');
 
   // Saviors & Journal
-  const SAVIORS = [
+  let SAVIORS = [
     {
       wallet: "0x4b19...60ea",
       state: "Protocol Creator / Treasury",
       timeAdded: "+7h 30m (+450 min)"
     }
   ];
+
+  let FUEL_LEADERBOARD = [];
+  let LAST_BURST = null;
 
   let JOURNAL_LOGS = [
     {
@@ -738,7 +741,7 @@ function getEthereumProviderSync() {
     }
     if (cmd === 'saviors') {
       if (SAVIORS.length === 0) {
-        appendLog('AGENT', 'No emergency rescues recorded yet. Be the first savior on Base.', 'agent');
+        appendLog('AGENT', 'No fuel events recorded yet. Be the first savior on Base.', 'agent');
       } else {
         appendLog('AGENT', `Total emergency rescues: ${SAVIORS.length}. Last hero: ${SAVIORS[0].wallet}.`, 'agent');
       }
@@ -784,12 +787,116 @@ function getEthereumProviderSync() {
     }
   }
 
+  function formatMins(mins) {
+    const n = Math.max(0, Number(mins) || 0);
+    if (n >= 60) {
+      const h = Math.floor(n / 60);
+      const m = n % 60;
+      return '+' + h + 'h ' + String(m).padStart(2, '0') + 'm';
+    }
+    return '+' + n + ' min';
+  }
+
+  function applyLastBurst(ev) {
+    LAST_BURST = ev || LAST_BURST;
+    const burstEl = document.getElementById('stat-last-burst');
+    const walletEl = document.getElementById('stat-last-wallet');
+    if (!burstEl || !walletEl) return;
+    if (!LAST_BURST) {
+      burstEl.textContent = '--';
+      walletEl.textContent = 'Awaiting first fueler';
+      return;
+    }
+    burstEl.textContent = formatMins(LAST_BURST.mins);
+    const who = LAST_BURST.display || LAST_BURST.wallet || 'unknown';
+    walletEl.textContent = LAST_BURST.usd ? (who + ' • $' + Number(LAST_BURST.usd).toFixed(2)) : who;
+  }
+
+  async function loadFuelers() {
+    try {
+      const res = await fetch('/api/fuelers', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.recent) && data.recent.length) {
+        SAVIORS = data.recent.slice(0, 12).map(ev => ({
+          wallet: ev.display || ev.wallet,
+          state: '$' + Number(ev.usd || 0).toFixed(2) + ' fuel • ' + (ev.source || 'swap'),
+          timeAdded: formatMins(ev.mins)
+        }));
+      } else if (Array.isArray(data.leaderboard) && data.leaderboard.length) {
+        SAVIORS = data.leaderboard.slice(0, 12).map(row => ({
+          wallet: row.display || row.wallet,
+          state: row.count + ' fills • $' + Number(row.totalUsd || 0).toFixed(2),
+          timeAdded: formatMins(row.totalMins)
+        }));
+      }
+      FUEL_LEADERBOARD = Array.isArray(data.leaderboard) ? data.leaderboard : [];
+      if (data.lastBurst) applyLastBurst(data.lastBurst);
+      if (data.market && data.market.pairAddress) {
+        const chartBtn = document.getElementById('chart-action-btn');
+        if (chartBtn) chartBtn.href = 'https://dexscreener.com/base/' + data.market.pairAddress;
+      }
+      renderSaviors();
+    } catch (e) {
+      console.warn('fuelers sync error:', e && e.message);
+    }
+  }
+
+  async function recordFuelEvent(opts) {
+    const wallet = (opts && opts.wallet) || connectedWallet || '';
+    if (!wallet || !String(wallet).startsWith('0x')) return null;
+    try {
+      const res = await fetch('/api/fuel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wallet: wallet,
+          eth: opts && opts.eth,
+          usd: opts && opts.usd,
+          mins: opts && opts.mins,
+          tx: opts && opts.tx,
+          source: (opts && opts.source) || 'farcaster'
+        })
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data && data.event) {
+        applyLastBurst(data.event);
+        appendLog('SYS', 'Fuel recorded: ' + (data.event.display || wallet) + ' ' + formatMins(data.event.mins) + ' runtime.', 'sys', true);
+      }
+      await loadFuelers();
+      return data;
+    } catch (e) {
+      console.warn('fuel record failed:', e && e.message);
+      return null;
+    }
+  }
+
+  async function composeFuelCast(opts) {
+    const sdk = (typeof farcasterSdk !== 'undefined' && farcasterSdk) || window.farcasterSdk;
+    if (!sdk || !sdk.actions || typeof sdk.actions.composeCast !== 'function') return;
+    const mins = (opts && opts.mins) || 1;
+    const usd = (opts && opts.usd) ? Number(opts.usd).toFixed(2) : null;
+    const text = usd
+      ? ('I just fueled $TTL with $' + usd + ' — +' + mins + ' min runtime. time2live.xyz')
+      : ('I just fueled $TTL — +' + mins + ' min runtime. time2live.xyz');
+    try {
+      await sdk.actions.composeCast({ text: text, embeds: ['https://time2live.xyz'] });
+    } catch (e) {
+      console.warn('composeCast skipped:', e && e.message);
+    }
+  }
+
+  window.recordFuelEvent = recordFuelEvent;
+  window.composeFuelCast = composeFuelCast;
+  window.loadFuelers = loadFuelers;
+
   function renderSaviors() {
     if (SAVIORS.length === 0) {
       saviorsList.innerHTML = `
         <div style="padding: 16px 12px; text-align: center; color: #64748b; font-size: 0.75rem; border: 1px dashed rgba(255,255,255,0.08); border-radius: 6px;">
           No emergency rescues recorded yet.<br>
-          <span style="color: #94a3b8;">Swap $TTL on Base once live to become the first hero.</span>
+          <span style="color: #94a3b8;">Buy $TTL on Base to put your wallet on the board.</span>
         </div>
       `;
       return;
@@ -936,7 +1043,9 @@ function getEthereumProviderSync() {
   loadConfiguration().then(() => {
     initThoughtFeed();
     loadJournal();
+    loadFuelers();
     setInterval(loadJournal, 60000);
+    setInterval(loadFuelers, 20000);
   });
 
 })();
@@ -980,6 +1089,32 @@ function setupFarcasterSwap() {
         try {
           console.log('[Farcaster] Triggering sdk.actions.swapToken for', caip19Token);
           await farcasterSdk.actions.swapToken({ buyToken: caip19Token });
+          try {
+            const ethAmt = parseFloat(String((document.getElementById('swap-eth-amount') || {}).value || '0.005').replace(',', '.')) || 0.005;
+            const usd = ethAmt * 2730;
+            const mins = Math.max(1, Math.round(usd * 0.03325));
+            if (typeof window.recordFuelEvent === 'function') {
+              await window.recordFuelEvent({ wallet: (typeof connectedWallet !== 'undefined' && connectedWallet) || undefined, eth: ethAmt, usd: usd, mins: mins, source: 'swapToken' });
+            }
+            if (typeof window.composeFuelCast === 'function') {
+              await window.composeFuelCast({ mins: mins, usd: usd });
+            }
+          } catch (postErr) {
+            console.warn('post-swap fuel/cast error:', postErr);
+          }
+          try {
+            const ethAmt = parseFloat(String((document.getElementById('swap-eth-amount') || {}).value || '0.005').replace(',', '.')) || 0.005;
+            const usd = ethAmt * 2730;
+            const mins = Math.max(1, Math.round(usd * 0.03325));
+            if (typeof window.recordFuelEvent === 'function') {
+              await window.recordFuelEvent({ wallet: (typeof connectedWallet !== 'undefined' && connectedWallet) || undefined, eth: ethAmt, usd: usd, mins: mins, source: 'swapToken' });
+            }
+            if (typeof window.composeFuelCast === 'function') {
+              await window.composeFuelCast({ mins: mins, usd: usd });
+            }
+          } catch (postErr) {
+            console.warn('post-swap fuel/cast error:', postErr);
+          }
           return false;
         } catch (swapErr) {
           console.warn('[Farcaster] sdk.actions.swapToken error, falling back to modal:', swapErr);
