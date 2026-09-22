@@ -326,6 +326,71 @@ function computeMinsFromUsd(usd) {
   return Math.max(0, Math.round(n * 0.03325));
 }
 
+
+async function rpcCall(env, method, params) {
+  const rpcs = [
+    env.BASE_RPC_URL,
+    'https://base-rpc.publicnode.com',
+    'https://mainnet.base.org',
+    'https://base.gateway.tenderly.co'
+  ].filter(Boolean);
+  for (const rpc of rpcs) {
+    try {
+      const rpcRes = await fetch(rpc, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; TTL-Agent/1.0)' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+      });
+      if (!rpcRes.ok) continue;
+      const rpcData = await rpcRes.json();
+      if (rpcData && rpcData.result) return rpcData.result;
+    } catch (e) {}
+  }
+  return null;
+}
+
+function topicAddress(topic) {
+  if (!topic) return '';
+  const s = String(topic).toLowerCase().replace(/^0x/, '');
+  return '0x' + s.slice(-40);
+}
+
+async function decodeSwapTx(env, txHash, wallet) {
+  const receipt = await rpcCall(env, 'eth_getTransactionReceipt', [txHash]);
+  if (!receipt || !Array.isArray(receipt.logs)) return null;
+  const tx = await rpcCall(env, 'eth_getTransactionByHash', [txHash]);
+  const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const WETH = '0x4200000000000000000000000000000000000006';
+  const w = String(wallet || '').toLowerCase();
+  let ttlIn = 0n;
+  let wethFrom = 0n;
+  for (const log of receipt.logs) {
+    const topic0 = String((log.topics && log.topics[0]) || '').toLowerCase();
+    if (topic0 !== TRANSFER) continue;
+    const from = topicAddress(log.topics && log.topics[1]);
+    const to = topicAddress(log.topics && log.topics[2]);
+    const addr = String(log.address || '').toLowerCase();
+    let value = 0n;
+    try { value = BigInt(log.data || '0x0'); } catch (e) { value = 0n; }
+    if (addr === TTL_TOKEN_ADDRESS.toLowerCase() && to === w) ttlIn += value;
+    if (addr === WETH && from === w) wethFrom += value;
+  }
+  const ttl = Number(ttlIn) / 1e18;
+  const ethFromWeth = Number(wethFrom) / 1e18;
+  let ethFromTx = 0;
+  try { if (tx && tx.value) ethFromTx = Number(BigInt(tx.value)) / 1e18; } catch (e) {}
+  const eth = ethFromWeth > 0 ? ethFromWeth : ethFromTx;
+  const market = await resolveMarket(env, TTL_TOKEN_ADDRESS);
+  const price = Number(market && market.priceUsd || 0);
+  const priceNative = Number(market && market.priceNative || 0);
+  const ethUsd = (price > 0 && priceNative > 0) ? (price / priceNative) : 2730;
+  let usd = 0;
+  if (eth > 0) usd = eth * ethUsd;
+  else if (ttl > 0 && price > 0) usd = ttl * price;
+  if (ttl <= 0 && eth <= 0 && usd <= 0) return null;
+  return { ttl, eth, usd };
+}
+
 async function readFuelers(env) {
   if (!hasKv(env)) return [];
   try {
@@ -713,22 +778,56 @@ export default {
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
           });
         }
-        const eth = Number(String(body.eth || '0').replace(',', '.')) || 0;
+        let eth = Number(String(body.eth || '0').replace(',', '.')) || 0;
+        let ttl = Number(String(body.ttl || '0').replace(',', '.')) || 0;
         let usd = Number(body.usd);
-        if (!usd || usd < 0) usd = eth > 0 ? eth * 2730 : 0;
+        const tx = typeof body.tx === 'string' && /^0x[a-fA-F0-9]{64}$/.test(body.tx) ? body.tx : null;
+        if (tx) {
+          try {
+            const decoded = await decodeSwapTx(env, tx, wallet);
+            if (decoded) {
+              if (decoded.eth > 0) eth = decoded.eth;
+              if (decoded.ttl > 0) ttl = decoded.ttl;
+              if (decoded.usd > 0) usd = decoded.usd;
+            }
+          } catch (e) {
+            console.warn('decodeSwapTx failed:', e && e.message);
+          }
+        }
+        if ((!usd || usd <= 0) && ttl > 0) {
+          try {
+            const market = await resolveMarket(env, TTL_TOKEN_ADDRESS);
+            const price = Number(market && market.priceUsd || 0);
+            if (price > 0) usd = ttl * price;
+          } catch (e) {}
+        }
+        if ((!usd || usd <= 0) && eth > 0) usd = eth * 2730;
+        usd = Math.max(0, Number(usd) || 0);
+        if (!tx && ttl <= 0 && eth <= 0) {
+          return new Response(JSON.stringify({ error: 'NO_SWAP_DELTA' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
         usd = Math.min(usd, 100000);
         let mins = Number(body.mins);
         if (!mins || mins < 0) mins = computeMinsFromUsd(usd);
         mins = Math.min(Math.max(0, Math.round(mins)), 10080);
-        const tx = typeof body.tx === 'string' && /^0x[a-fA-F0-9]{64}$/.test(body.tx) ? body.tx : null;
+        if (usd <= 0 && ttl <= 0) {
+          return new Response(JSON.stringify({ error: 'EMPTY_SWAP' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
         const events = await readFuelers(env);
         const now = Date.now();
-        const dup = events.some(e => e.wallet === wallet && Math.abs((e.ts || 0) - now) < 30000);
+        const dup = events.some(e => (tx && e.tx === tx) || (e.wallet === wallet && Math.abs((e.ts || 0) - now) < 30000));
         if (!dup) {
           events.unshift({
             wallet,
             display: shortWallet(wallet),
             usd: Number(usd.toFixed(2)),
+            ttl: Number(Number(ttl).toFixed(4)),
             mins,
             eth,
             tx,
@@ -737,7 +836,7 @@ export default {
           });
           await writeFuelers(env, events);
         }
-        const agg = aggregateFuelers(events);
+                const agg = aggregateFuelers(events);
         return new Response(JSON.stringify({ ok: true, event: agg.lastBurst, leaderboard: agg.leaderboard.slice(0, 10) }), {
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
         });
