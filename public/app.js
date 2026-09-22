@@ -880,11 +880,12 @@ function getEthereumProviderSync() {
   async function composeFuelCast(opts) {
     const sdk = (typeof farcasterSdk !== 'undefined' && farcasterSdk) || window.farcasterSdk;
     if (!sdk || !sdk.actions || typeof sdk.actions.composeCast !== 'function') return;
-    const mins = (opts && opts.mins) || 1;
-    const usd = (opts && opts.usd) ? Number(opts.usd).toFixed(2) : null;
-    const text = usd
-      ? ('I just fueled $TTL with $' + usd + ' — +' + mins + ' min runtime. time2live.xyz')
-      : ('I just fueled $TTL — +' + mins + ' min runtime. time2live.xyz');
+        const mins = Math.max(0, Math.round(Number(opts && opts.mins) || 0));
+    const usdNum = Number(opts && opts.usd);
+    const usd = (usdNum > 0 && isFinite(usdNum)) ? usdNum.toFixed(2) : null;
+    if (!usd) return;
+    const minLabel = mins === 1 ? 'min' : 'mins';
+    const text = 'I just fueled $TTL with $' + usd + ' — +' + mins + ' ' + minLabel + ' runtime. time2live.xyz';
     try {
       await sdk.actions.composeCast({ text: text, embeds: ['https://time2live.xyz'] });
     } catch (e) {
@@ -1169,8 +1170,9 @@ function setupFarcasterSwap() {
               if (ttlDelta > 0 && priceNative > 0) eth = ttlDelta * priceNative;
             }
           } catch (e) {}
+          let recorded = null;
           if (typeof window.recordFuelEvent === 'function' && wallet && (ttlDelta > 0 || txHash)) {
-            await window.recordFuelEvent({
+            recorded = await window.recordFuelEvent({
               wallet: wallet,
               ttl: ttlDelta,
               eth: eth,
@@ -1179,11 +1181,15 @@ function setupFarcasterSwap() {
               source: 'swapToken'
             });
           }
-          if (typeof window.composeFuelCast === 'function' && (usd > 0 || ttlDelta > 0)) {
-            const mins = Math.max(1, Math.round(usd * 0.03325));
-            await window.composeFuelCast({ mins: mins, usd: usd });
+          const ev = recorded && recorded.event;
+          const shareUsd = Number(ev && ev.usd) || 0;
+          const shareMins = (ev && ev.mins != null)
+            ? Math.max(0, Math.round(Number(ev.mins) || 0))
+            : Math.max(0, Math.round(shareUsd * 0.03325));
+          if (typeof window.composeFuelCast === 'function' && shareUsd > 0) {
+            await window.composeFuelCast({ mins: shareMins, usd: shareUsd });
           }
-                    return false;
+          return false;
         } catch (swapErr) {
           console.warn('[Farcaster] sdk.actions.swapToken error, falling back to modal:', swapErr);
         }
