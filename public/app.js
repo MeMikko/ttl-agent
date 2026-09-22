@@ -15,24 +15,21 @@ window.isInsideFarcaster = false;
 
 function isFarcasterEnv() {
   if (window.isInsideFarcaster) return true;
-  if (window.farcasterSdk?.wallet?.ethProvider || farcasterSdk?.wallet?.ethProvider) return true;
   const ua = (navigator.userAgent || '').toLowerCase();
   if (ua.includes('warpcast') || ua.includes('farcaster')) return true;
-  try {
-    if (window.self !== window.top) return true;
-  } catch (e) {
-    return true;
-  }
   return false;
 }
 
 async function getEthereumProvider() {
-  if (farcasterSdk?.wallet) {
+  if (window._activeProvider) return window._activeProvider;
+
+  // 1. Inside Farcaster MiniApp -> use Farcaster provider
+  if (isFarcasterEnv() && farcasterSdk?.wallet) {
     try {
       if (typeof farcasterSdk.wallet.getEthereumProvider === 'function') {
         const p = await Promise.race([
           farcasterSdk.wallet.getEthereumProvider(),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('getEthereumProvider timed out')), 4000))
+          new Promise((_, rej) => setTimeout(() => rej(new Error('getEthereumProvider timed out')), 3000))
         ]);
         if (p) return p;
       }
@@ -43,11 +40,23 @@ async function getEthereumProvider() {
       return farcasterSdk.wallet.ethProvider;
     }
   }
-  return window.ethereum || null;
+
+  // 2. Browser injected (MetaMask, Rabby, Coinbase Wallet, etc.)
+  if (window.ethereum) {
+    return window.ethereum;
+  }
+
+  // 3. Active WalletConnect provider if already connected
+  if (window._wcProvider && window._wcProvider.connected) {
+    return window._wcProvider;
+  }
+
+  return null;
 }
 
 function getEthereumProviderSync() {
-  if (farcasterSdk?.wallet) {
+  if (window._activeProvider) return window._activeProvider;
+  if (isFarcasterEnv() && farcasterSdk?.wallet) {
     if (typeof farcasterSdk.wallet.getEthereumProvider === 'function') {
       try {
         const p = farcasterSdk.wallet.getEthereumProvider();
@@ -58,7 +67,7 @@ function getEthereumProviderSync() {
       return farcasterSdk.wallet.ethProvider;
     }
   }
-  return window.ethereum || null;
+  return window.ethereum || (window._wcProvider?.connected ? window._wcProvider : null);
 }
 
 
@@ -87,7 +96,8 @@ function getEthereumProviderSync() {
       } catch (checkErr) {
         inMiniApp = isFarcasterEnv();
       }
-      if (inMiniApp || isFarcasterEnv()) {
+      const uaCheck = (navigator.userAgent || '').toLowerCase();
+      if (inMiniApp || uaCheck.includes('warpcast') || uaCheck.includes('farcaster')) {
         window.isInsideFarcaster = true;
         isInsideFarcaster = true;
         if (typeof setupFarcasterSwap === 'function') {
@@ -521,6 +531,116 @@ function getEthereumProviderSync() {
     updateTokenGateUI();
   }
 
+  
+  // Wallet Modal Helpers
+  function openWalletModal() {
+    const modal = document.getElementById('wallet-modal');
+    if (!modal) {
+      if (window.ethereum) connectInjected();
+      else connectWalletConnect();
+      return;
+    }
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    const statusEl = document.getElementById('wallet-modal-status');
+    if (statusEl) statusEl.textContent = window.ethereum ? 'Injected Web3 wallet detected' : 'No injected wallet found (use WalletConnect)';
+  }
+
+  function closeWalletModal() {
+    const modal = document.getElementById('wallet-modal');
+    if (modal) {
+      modal.classList.add('hidden');
+      modal.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  async function connectInjected() {
+    if (!window.ethereum) {
+      const statusEl = document.getElementById('wallet-modal-status');
+      if (statusEl) statusEl.textContent = 'No injected wallet found. Starting WalletConnect...';
+      return connectWalletConnect();
+    }
+    await connectWithProvider(window.ethereum);
+  }
+
+  async function connectWalletConnect() {
+    const statusEl = document.getElementById('wallet-modal-status');
+    if (statusEl) statusEl.textContent = 'Opening WalletConnect QR / App...';
+    try {
+      let wc = window._wcProvider;
+      if (!wc || !wc.connected) {
+        if (typeof window.initWalletConnect === 'function') {
+          wc = await window.initWalletConnect("5a0ce1d2bc51d4aa8c2e8580a4be0d90");
+        } else if (window.EthereumProvider) {
+          wc = await window.EthereumProvider.init({
+            projectId: "5a0ce1d2bc51d4aa8c2e8580a4be0d90",
+            chains: [8453],
+            showQrModal: true,
+            metadata: {
+              name: "TTL ($TTL)",
+              description: "Autonomous survival-clock agent on Base",
+              url: "https://time2live.xyz",
+              icons: ["https://time2live.xyz/icon.png"]
+            }
+          });
+          await wc.connect();
+        } else {
+          throw new Error("WalletConnect bundle not loaded yet. Please wait a moment.");
+        }
+      }
+      if (wc) {
+        window._wcProvider = wc;
+        await connectWithProvider(wc);
+      }
+    } catch (err) {
+      console.error('WalletConnect connection error:', err);
+      if (statusEl) statusEl.textContent = 'WalletConnect error: ' + (err.message || 'Failed');
+    }
+  }
+
+  async function connectWithProvider(provider) {
+    if (!provider) {
+      appendLog('SYS', 'No Web3 wallet provider detected. Please install MetaMask or use WalletConnect.', 'warn');
+      return;
+    }
+    try {
+      authWalletBtn.textContent = 'CONNECTING...';
+      const accounts = await provider.request({ method: 'eth_requestAccounts' });
+      if (accounts && accounts.length > 0) {
+        window._activeProvider = provider;
+        connectedWallet = accounts[0].toLowerCase();
+        closeWalletModal();
+        appendLog('SYS', 'Wallet connected: ' + formatAddress(connectedWallet) + '. Verifying $TTL balance on Base...', 'sys');
+        await checkUserBalance(connectedWallet);
+
+        if (hasChatAccess) {
+          appendLog('SYS', 'Neural access unlocked. Holding ' + formatTokens(userBalance) + ' $TTL.', 'agent', true);
+        } else {
+          appendLog('SYS', 'Holdings insufficient: ' + formatTokens(userBalance) + ' $TTL found. Minimum required is ' + formatTokens(appConfig.minChatTokens || 10000000) + ' $TTL.', 'warn');
+        }
+
+        if (typeof provider.on === 'function') {
+          provider.on('accountsChanged', (accs) => {
+            if (!accs || accs.length === 0) {
+              connectedWallet = null;
+              userBalance = 0;
+              hasChatAccess = false;
+              updateTokenGateUI();
+            } else {
+              connectedWallet = accs[0].toLowerCase();
+              checkUserBalance(connectedWallet);
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Wallet connection error:', err);
+      appendLog('SYS', 'Connection error: ' + (err.message || 'User cancelled'), 'warn');
+    } finally {
+      updateTokenGateUI();
+    }
+  }
+
   async function connectWallet() {
     if (!appConfig.isLaunched) return;
 
@@ -547,6 +667,10 @@ function getEthereumProviderSync() {
     }
 
     if (connectedWallet && hasChatAccess) {
+      if (window._wcProvider && typeof window._wcProvider.disconnect === 'function') {
+        try { window._wcProvider.disconnect(); } catch(e) {}
+      }
+      window._activeProvider = null;
       connectedWallet = null;
       userBalance = 0;
       hasChatAccess = false;
@@ -1036,6 +1160,20 @@ function getEthereumProviderSync() {
   });
 
   authWalletBtn.addEventListener('click', connectWallet);
+
+    const closeWalletBtn = document.getElementById('close-wallet-modal-btn');
+    if (closeWalletBtn) closeWalletBtn.addEventListener('click', closeWalletModal);
+    const connInjectedBtn = document.getElementById('connect-injected-btn');
+    if (connInjectedBtn) connInjectedBtn.addEventListener('click', connectInjected);
+    const connWcBtn = document.getElementById('connect-wc-btn');
+    if (connWcBtn) connWcBtn.addEventListener('click', connectWalletConnect);
+    const walletModalEl = document.getElementById('wallet-modal');
+    if (walletModalEl) {
+      walletModalEl.addEventListener('click', (e) => {
+        if (e.target === walletModalEl) closeWalletModal();
+      });
+    }
+
   terminalSendBtn.addEventListener('click', handleUserInput);
   terminalInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') handleUserInput();
